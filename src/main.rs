@@ -1,12 +1,16 @@
 use std::{error::Error, ffi::CString, io::Cursor, mem::size_of, ptr, sync::Arc, time::Instant};
 
 use ash::{Entry, vk};
+use imgui::{Context, DrawData};
+use imgui_rs_vulkan_renderer::{Options as ImGuiRendererOptions, Renderer as ImGuiRenderer};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::WindowEvent,
+    event::{ElementState, Event, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowAttributes},
 };
 
@@ -151,7 +155,11 @@ struct VulkanApp {
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
     vertex_count: u32,
+    imgui: Context,
+    imgui_platform: WinitPlatform,
+    imgui_renderer: Option<ImGuiRenderer>,
     started_at: Instant,
+    last_frame_at: Instant,
 }
 
 impl VulkanApp {
@@ -219,6 +227,25 @@ impl VulkanApp {
         let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
         let in_flight = unsafe { device.create_fence(&fence_info, None)? };
 
+        let mut imgui = Context::create();
+        imgui.set_ini_filename(None);
+        let mut imgui_platform = WinitPlatform::new(&mut imgui);
+        imgui_platform.attach_window(imgui.io_mut(), window, HiDpiMode::Default);
+        let imgui_renderer = ImGuiRenderer::with_default_allocator(
+            &instance,
+            physical_device,
+            device.clone(),
+            queue,
+            command_pool,
+            resources.render_pass,
+            &mut imgui,
+            Some(ImGuiRendererOptions {
+                in_flight_frames: 1,
+                ..Default::default()
+            }),
+        )?;
+
+        let started_at = Instant::now();
         Ok(Self {
             _entry: entry,
             instance,
@@ -235,7 +262,11 @@ impl VulkanApp {
             vertex_buffer,
             vertex_memory,
             vertex_count: mesh.len() as u32,
-            started_at: Instant::now(),
+            imgui,
+            imgui_platform,
+            imgui_renderer: Some(imgui_renderer),
+            started_at,
+            last_frame_at: started_at,
         })
     }
 
@@ -683,7 +714,29 @@ impl VulkanApp {
         })
     }
 
-    fn draw_frame(&self) -> Result<(), Box<dyn Error>> {
+    fn draw_frame(&mut self, window: &Window, show_debug_menu: bool) -> Result<(), Box<dyn Error>> {
+        let now = Instant::now();
+        self.imgui
+            .io_mut()
+            .update_delta_time(now.duration_since(self.last_frame_at));
+        self.last_frame_at = now;
+        self.imgui_platform
+            .prepare_frame(self.imgui.io_mut(), window)?;
+
+        let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
+        let ui = self.imgui.frame();
+        if show_debug_menu {
+            ui.window("Debug Menu (F3)")
+                .size([300.0, 120.0], imgui::Condition::FirstUseEver)
+                .build(|| {
+                    ui.text(format!("Frame rate: {:.1} FPS", ui.io().framerate));
+                    ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
+                    ui.text(format!("Scene vertices: {}", self.vertex_count));
+                });
+        }
+        self.imgui_platform.prepare_render(ui, window);
+        let draw_data = self.imgui.render();
+
         unsafe {
             self.device
                 .wait_for_fences(&[self.in_flight], true, u64::MAX)?;
@@ -697,7 +750,19 @@ impl VulkanApp {
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
             let angle = self.started_at.elapsed().as_secs_f32() * 0.8;
-            self.record_commands(command_buffer, image_index, angle)?;
+            Self::record_commands(
+                &self.device,
+                &self.resources,
+                self.vertex_buffer,
+                self.vertex_count,
+                command_buffer,
+                image_index,
+                angle,
+                self.imgui_renderer
+                    .as_mut()
+                    .expect("ImGui renderer is initialized with the Vulkan app"),
+                draw_data,
+            )?;
             self.device.reset_fences(&[self.in_flight])?;
             let wait_semaphores = [self.image_available];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -725,15 +790,19 @@ impl VulkanApp {
     }
 
     unsafe fn record_commands(
-        &self,
+        device: &ash::Device,
+        resources: &SwapchainResources,
+        vertex_buffer: vk::Buffer,
+        vertex_count: u32,
         command_buffer: vk::CommandBuffer,
         image_index: u32,
         angle: f32,
+        imgui_renderer: &mut ImGuiRenderer,
+        draw_data: &DrawData,
     ) -> Result<(), Box<dyn Error>> {
         unsafe {
             let begin_info = vk::CommandBufferBeginInfo::default();
-            self.device
-                .begin_command_buffer(command_buffer, &begin_info)?;
+            device.begin_command_buffer(command_buffer, &begin_info)?;
             let clear_values = [
                 vk::ClearValue {
                     color: vk::ClearColorValue {
@@ -748,56 +817,55 @@ impl VulkanApp {
                 },
             ];
             let render_pass_info = vk::RenderPassBeginInfo::default()
-                .render_pass(self.resources.render_pass)
-                .framebuffer(self.resources.framebuffers[image_index as usize])
+                .render_pass(resources.render_pass)
+                .framebuffer(resources.framebuffers[image_index as usize])
                 .render_area(vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: self.resources.extent,
+                    extent: resources.extent,
                 })
                 .clear_values(&clear_values);
-            self.device.cmd_begin_render_pass(
+            device.cmd_begin_render_pass(
                 command_buffer,
                 &render_pass_info,
                 vk::SubpassContents::INLINE,
             );
-            self.device.cmd_bind_pipeline(
+            device.cmd_bind_pipeline(
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.resources.pipeline,
+                resources.pipeline,
             );
-            self.device
-                .cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
-            self.device.cmd_push_constants(
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &[vertex_buffer], &[0]);
+            device.cmd_push_constants(
                 command_buffer,
-                self.resources.pipeline_layout,
+                resources.pipeline_layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
                 std::slice::from_raw_parts((&angle as *const f32).cast::<u8>(), size_of::<f32>()),
             );
-            self.device.cmd_set_viewport(
+            device.cmd_set_viewport(
                 command_buffer,
                 0,
                 &[vk::Viewport {
                     x: 0.0,
                     y: 0.0,
-                    width: self.resources.extent.width as f32,
-                    height: self.resources.extent.height as f32,
+                    width: resources.extent.width as f32,
+                    height: resources.extent.height as f32,
                     min_depth: 0.0,
                     max_depth: 1.0,
                 }],
             );
-            self.device.cmd_set_scissor(
+            device.cmd_set_scissor(
                 command_buffer,
                 0,
                 &[vk::Rect2D {
                     offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: self.resources.extent,
+                    extent: resources.extent,
                 }],
             );
-            self.device
-                .cmd_draw(command_buffer, self.vertex_count, 1, 0, 0);
-            self.device.cmd_end_render_pass(command_buffer);
-            self.device.end_command_buffer(command_buffer)?;
+            device.cmd_draw(command_buffer, vertex_count, 1, 0, 0);
+            imgui_renderer.cmd_draw(command_buffer, draw_data)?;
+            device.cmd_end_render_pass(command_buffer);
+            device.end_command_buffer(command_buffer)?;
         }
         Ok(())
     }
@@ -807,6 +875,7 @@ impl Drop for VulkanApp {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            drop(self.imgui_renderer.take());
             self.device.destroy_fence(self.in_flight, None);
             self.device.destroy_semaphore(self.render_finished, None);
             self.device.destroy_semaphore(self.image_available, None);
@@ -824,6 +893,7 @@ impl Drop for VulkanApp {
 struct ExampleApp {
     app: Option<VulkanApp>,
     window: Option<Arc<Window>>,
+    show_debug_menu: bool,
 }
 
 impl ApplicationHandler for ExampleApp {
@@ -871,14 +941,34 @@ impl ApplicationHandler for ExampleApp {
             return;
         }
 
+        if let (Some(app), Some(window)) = (&mut self.app, &self.window) {
+            let platform_event: Event<()> = Event::WindowEvent {
+                window_id,
+                event: event.clone(),
+            };
+            app.imgui_platform
+                .handle_event(app.imgui.io_mut(), window, &platform_event);
+        }
+
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
+            {
+                self.show_debug_menu = !self.show_debug_menu;
+            }
             WindowEvent::RedrawRequested => {
+                let window = self
+                    .window
+                    .as_ref()
+                    .expect("window is initialized with the Vulkan app");
                 let result = self
                     .app
-                    .as_ref()
+                    .as_mut()
                     .expect("Vulkan app is initialized with the window")
-                    .draw_frame();
+                    .draw_frame(window, self.show_debug_menu);
                 if let Err(error) = result {
                     eprintln!("Failed to draw Pyraminx: {error}");
                     event_loop.exit();
@@ -900,6 +990,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     event_loop.run_app(&mut ExampleApp {
         app: None,
         window: None,
+        show_debug_menu: false,
     })?;
     Ok(())
 }
@@ -921,12 +1012,14 @@ mod tests {
 
     #[test]
     fn obj_parser_triangulates_polygon_faces() {
-        let vertices = parse_obj(
-            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\ng blue\nf 1 2 3 4\n",
-        )
-        .unwrap();
+        let vertices =
+            parse_obj("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\ng blue\nf 1 2 3 4\n").unwrap();
 
         assert_eq!(vertices.len(), 6);
-        assert!(vertices.iter().all(|vertex| vertex.color == [0.12, 0.32, 0.95]));
+        assert!(
+            vertices
+                .iter()
+                .all(|vertex| vertex.color == [0.12, 0.32, 0.95])
+        );
     }
 }
