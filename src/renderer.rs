@@ -62,6 +62,10 @@ pub(crate) struct VulkanApp {
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
     vertex_count: u32,
+    object_vertices: Vec<Vertex>,
+    cursor_position: Option<[f64; 2]>,
+    object_window_open: bool,
+    object_window_position: Option<[f32; 2]>,
     imgui: Context,
     imgui_platform: WinitPlatform,
     imgui_renderer: Option<ImGuiRenderer>,
@@ -169,6 +173,10 @@ impl VulkanApp {
             vertex_buffer,
             vertex_memory,
             vertex_count: mesh.len() as u32,
+            object_vertices: mesh,
+            cursor_position: None,
+            object_window_open: false,
+            object_window_position: None,
             imgui,
             imgui_platform,
             imgui_renderer: Some(imgui_renderer),
@@ -626,6 +634,7 @@ impl VulkanApp {
         window: &Window,
         window_id: winit::window::WindowId,
         event: &WindowEvent,
+        show_debug_menu: bool,
     ) {
         let platform_event: Event<()> = Event::WindowEvent {
             window_id,
@@ -633,6 +642,70 @@ impl VulkanApp {
         };
         self.imgui_platform
             .handle_event(self.imgui.io_mut(), window, &platform_event);
+
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some([position.x, position.y]);
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } if show_debug_menu && !self.imgui.io().want_capture_mouse => {
+                let picked = self.cursor_position.is_some_and(|position| {
+                    let angle = self.started_at.elapsed().as_secs_f32() * 0.8;
+                    self.pick_object(
+                        position,
+                        angle,
+                        window.inner_size().width,
+                        window.inner_size().height,
+                    )
+                });
+                self.object_window_open = picked;
+                if picked {
+                    self.object_window_position = self.cursor_position.map(|position| {
+                        let scale_factor = window.scale_factor();
+                        [
+                            (position[0] / scale_factor) as f32 + 12.0,
+                            (position[1] / scale_factor) as f32 + 12.0,
+                        ]
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn pick_object(&self, cursor: [f64; 2], angle: f32, width: u32, height: u32) -> bool {
+        if width == 0 || height == 0 {
+            return false;
+        }
+
+        let ndc_x = (2.0 * cursor[0] / f64::from(width) - 1.0) as f32;
+        let ndc_y = (2.0 * cursor[1] / f64::from(height) - 1.0) as f32;
+        let ray_origin_rotated = [0.0, 0.0, -3.0];
+        let ray_direction_rotated = [ndc_x / 1.05, ndc_y / 1.4, 1.0];
+        let cosine = angle.cos();
+        let sine = angle.sin();
+        let rotate_to_object_space = |point: [f32; 3]| {
+            [
+                cosine * point[0] - sine * point[2],
+                point[1],
+                sine * point[0] + cosine * point[2],
+            ]
+        };
+        let ray_origin = rotate_to_object_space(ray_origin_rotated);
+        let ray_direction = rotate_to_object_space(ray_direction_rotated);
+
+        self.object_vertices.chunks_exact(3).any(|triangle| {
+            ray_intersects_triangle(
+                ray_origin,
+                ray_direction,
+                triangle[0].position,
+                triangle[1].position,
+                triangle[2].position,
+            )
+        })
     }
 
     pub(crate) fn draw_frame(
@@ -649,15 +722,67 @@ impl VulkanApp {
             .prepare_frame(self.imgui.io_mut(), window)?;
 
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
+        let angle = elapsed_seconds * 0.8;
         let ui = self.imgui.frame();
         if show_debug_menu {
             ui.window("Debug Menu (F3)")
                 .size([300.0, 120.0], imgui::Condition::FirstUseEver)
+                .position([10.0, 10.0], imgui::Condition::FirstUseEver)
+                .title_bar(false)
+                .resizable(false)
                 .build(|| {
                     ui.text(format!("Frame rate: {:.1} FPS", ui.io().framerate));
                     ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
                     ui.text(format!("Scene vertices: {}", self.vertex_count));
                 });
+            if self.object_window_open {
+                let min =
+                    self.object_vertices
+                        .iter()
+                        .fold([f32::INFINITY; 3], |mut bounds, vertex| {
+                            for (axis, value) in vertex.position.iter().enumerate() {
+                                bounds[axis] = bounds[axis].min(*value);
+                            }
+                            bounds
+                        });
+                let max = self.object_vertices.iter().fold(
+                    [f32::NEG_INFINITY; 3],
+                    |mut bounds, vertex| {
+                        for (axis, value) in vertex.position.iter().enumerate() {
+                            bounds[axis] = bounds[axis].max(*value);
+                        }
+                        bounds
+                    },
+                );
+                let mut object_window_open = self.object_window_open;
+                let mut object_window = ui
+                    .window("Object: Pyraminx")
+                    .opened(&mut object_window_open)
+                    .size([300.0, 230.0], imgui::Condition::FirstUseEver);
+                if let Some(position) = self.object_window_position {
+                    object_window = object_window.position(position, imgui::Condition::Appearing);
+                }
+                object_window.build(|| {
+                    ui.text("Position: (0.00, 0.00, 0.00)");
+                    ui.text(format!(
+                        "Rotation: (0.00, {:.1}, 0.00) deg",
+                        angle.to_degrees()
+                    ));
+                    ui.text("Scale: (1.00, 1.00, 1.00)");
+                    ui.separator();
+                    ui.text(format!("Vertices: {}", self.vertex_count));
+                    ui.text(format!("Triangles: {}", self.vertex_count / 3));
+                    ui.text(format!(
+                        "Bounds min: ({:.2}, {:.2}, {:.2})",
+                        min[0], min[1], min[2]
+                    ));
+                    ui.text(format!(
+                        "Bounds max: ({:.2}, {:.2}, {:.2})",
+                        max[0], max[1], max[2]
+                    ));
+                });
+                self.object_window_open = object_window_open;
+            }
         }
         self.imgui_platform.prepare_render(ui, window);
         let draw_data = self.imgui.render();
@@ -674,7 +799,6 @@ impl VulkanApp {
             let command_buffer = self.command_buffers[image_index as usize];
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
-            let angle = self.started_at.elapsed().as_secs_f32() * 0.8;
             Self::record_commands(
                 &self.device,
                 &self.resources,
@@ -796,6 +920,51 @@ impl VulkanApp {
     }
 }
 
+fn ray_intersects_triangle(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    vertex_a: [f32; 3],
+    vertex_b: [f32; 3],
+    vertex_c: [f32; 3],
+) -> bool {
+    let subtract = |left: [f32; 3], right: [f32; 3]| {
+        [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
+    };
+    let cross = |left: [f32; 3], right: [f32; 3]| {
+        [
+            left[1] * right[2] - left[2] * right[1],
+            left[2] * right[0] - left[0] * right[2],
+            left[0] * right[1] - left[1] * right[0],
+        ]
+    };
+    let dot = |left: [f32; 3], right: [f32; 3]| {
+        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+    };
+
+    let edge_a = subtract(vertex_b, vertex_a);
+    let edge_b = subtract(vertex_c, vertex_a);
+    let perpendicular = cross(direction, edge_b);
+    let determinant = dot(edge_a, perpendicular);
+    if determinant.abs() < 1e-6 {
+        return false;
+    }
+
+    let inverse_determinant = determinant.recip();
+    let from_vertex = subtract(origin, vertex_a);
+    let u = dot(from_vertex, perpendicular) * inverse_determinant;
+    if !(0.0..=1.0).contains(&u) {
+        return false;
+    }
+
+    let perpendicular = cross(from_vertex, edge_a);
+    let v = dot(direction, perpendicular) * inverse_determinant;
+    if v < 0.0 || u + v > 1.0 {
+        return false;
+    }
+
+    dot(edge_b, perpendicular) * inverse_determinant > 0.0
+}
+
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         unsafe {
@@ -812,5 +981,30 @@ impl Drop for VulkanApp {
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ray_triangle_intersection_detects_hits_and_misses() {
+        let triangle = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
+
+        assert!(ray_intersects_triangle(
+            [0.0, 0.0, -2.0],
+            [0.0, 0.0, 1.0],
+            triangle[0],
+            triangle[1],
+            triangle[2],
+        ));
+        assert!(!ray_intersects_triangle(
+            [2.0, 2.0, -2.0],
+            [0.0, 0.0, 1.0],
+            triangle[0],
+            triangle[1],
+            triangle[2],
+        ));
     }
 }

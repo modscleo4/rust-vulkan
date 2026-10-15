@@ -63,7 +63,7 @@ impl ApplicationHandler for ExampleApp {
         }
 
         if let (Some(app), Some(window)) = (&mut self.app, &self.window) {
-            app.handle_window_event(window, window_id, &event);
+            app.handle_window_event(window, window_id, &event, self.show_debug_menu);
         }
 
         match event {
