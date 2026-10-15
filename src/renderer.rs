@@ -10,7 +10,7 @@ use winit::{
     window::Window,
 };
 
-use crate::model::{Vertex, parse_obj};
+use crate::model::{Vertex, load_gltf};
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -62,6 +62,7 @@ pub(crate) struct VulkanApp {
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
     vertex_count: u32,
+    object_name: String,
     object_vertices: Vec<Vertex>,
     cursor_position: Option<[f64; 2]>,
     object_window_open: bool,
@@ -108,9 +109,10 @@ impl VulkanApp {
             .enabled_extension_names(&device_extensions);
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
-        let mesh = parse_obj(include_str!("models/pyraminx.obj"))?;
-        let (vertex_buffer, vertex_memory) =
-            unsafe { Self::create_vertex_buffer(&instance, physical_device, &device, &mesh)? };
+        let mesh = load_gltf(include_bytes!("models/pyraminx.gltf"))?;
+        let (vertex_buffer, vertex_memory) = unsafe {
+            Self::create_vertex_buffer(&instance, physical_device, &device, &mesh.vertices)?
+        };
 
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family)
@@ -172,8 +174,9 @@ impl VulkanApp {
             resources,
             vertex_buffer,
             vertex_memory,
-            vertex_count: mesh.len() as u32,
-            object_vertices: mesh,
+            vertex_count: mesh.vertices.len() as u32,
+            object_name: mesh.name,
+            object_vertices: mesh.vertices,
             cursor_position: None,
             object_window_open: false,
             object_window_position: None,
@@ -755,8 +758,9 @@ impl VulkanApp {
                     },
                 );
                 let mut object_window_open = self.object_window_open;
+                let object_window_title = format!("Object: {}", self.object_name);
                 let mut object_window = ui
-                    .window("Object: Pyraminx")
+                    .window(&object_window_title)
                     .opened(&mut object_window_open)
                     .size([300.0, 230.0], imgui::Condition::FirstUseEver);
                 if let Some(position) = self.object_window_position {
