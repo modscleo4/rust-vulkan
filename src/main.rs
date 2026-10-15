@@ -1,4 +1,4 @@
-use std::{error::Error, ffi::CString, io::Cursor, sync::Arc};
+use std::{error::Error, ffi::CString, io::Cursor, mem::size_of, ptr, sync::Arc, time::Instant};
 
 use ash::{Entry, vk};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -6,9 +6,100 @@ use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     window::{Window, WindowAttributes},
 };
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+fn parse_obj(source: &str) -> Result<Vec<Vertex>, Box<dyn Error>> {
+    let mut positions = Vec::new();
+    let mut vertices = Vec::new();
+    let mut color = [0.8, 0.8, 0.8];
+
+    for (line_number, line) in source.lines().enumerate() {
+        let mut fields = line.split_whitespace();
+        match fields.next() {
+            Some("v") => {
+                let coordinates = fields
+                    .take(3)
+                    .map(str::parse::<f32>)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if coordinates.len() != 3 {
+                    return Err(format!(
+                        "OBJ line {}: expected 3 vertex coordinates",
+                        line_number + 1
+                    )
+                    .into());
+                }
+                positions.push([coordinates[0], coordinates[1], coordinates[2]]);
+            }
+            Some("g") | Some("usemtl") => {
+                color = match fields.next().unwrap_or_default() {
+                    "red" => [0.95, 0.12, 0.12],
+                    "blue" => [0.12, 0.32, 0.95],
+                    "yellow" => [0.98, 0.78, 0.08],
+                    "green" => [0.08, 0.72, 0.24],
+                    _ => [0.8, 0.8, 0.8],
+                };
+            }
+            Some("f") => {
+                let indices = fields
+                    .map(|field| {
+                        let raw_index = field
+                            .split('/')
+                            .next()
+                            .unwrap_or_default()
+                            .parse::<isize>()?;
+                        let index = if raw_index > 0 {
+                            raw_index - 1
+                        } else {
+                            positions.len() as isize + raw_index
+                        };
+                        usize::try_from(index).map_err(|_| {
+                            format!("OBJ line {}: invalid vertex index", line_number + 1).into()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
+                if indices.len() < 3 {
+                    return Err(format!(
+                        "OBJ line {}: face needs at least 3 vertices",
+                        line_number + 1
+                    )
+                    .into());
+                }
+                for index in &indices {
+                    if *index >= positions.len() {
+                        return Err(format!(
+                            "OBJ line {}: vertex index is out of range",
+                            line_number + 1
+                        )
+                        .into());
+                    }
+                }
+                for corner in 1..indices.len() - 1 {
+                    for index in [indices[0], indices[corner], indices[corner + 1]] {
+                        vertices.push(Vertex {
+                            position: positions[index],
+                            color,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if vertices.is_empty() {
+        return Err("OBJ model contains no faces".into());
+    }
+    Ok(vertices)
+}
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -19,6 +110,9 @@ struct SwapchainResources {
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
     extent: vk::Extent2D,
+    depth_image: vk::Image,
+    depth_memory: vk::DeviceMemory,
+    depth_view: vk::ImageView,
 }
 
 impl SwapchainResources {
@@ -33,6 +127,9 @@ impl SwapchainResources {
             for image_view in self.image_views.drain(..) {
                 device.destroy_image_view(image_view, None);
             }
+            device.destroy_image_view(self.depth_view, None);
+            device.destroy_image(self.depth_image, None);
+            device.free_memory(self.depth_memory, None);
             self.loader.destroy_swapchain(self.swapchain, None);
         }
     }
@@ -51,12 +148,16 @@ struct VulkanApp {
     render_finished: vk::Semaphore,
     in_flight: vk::Fence,
     resources: SwapchainResources,
+    vertex_buffer: vk::Buffer,
+    vertex_memory: vk::DeviceMemory,
+    vertex_count: u32,
+    started_at: Instant,
 }
 
 impl VulkanApp {
     fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
         let entry = unsafe { Entry::load()? };
-        let app_name = CString::new("Vulkan triangle")?;
+        let app_name = CString::new("Rotating Pyraminx")?;
         let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(vk::make_api_version(0, 1, 0, 0))
@@ -88,6 +189,9 @@ impl VulkanApp {
             .enabled_extension_names(&device_extensions);
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
+        let mesh = parse_obj(include_str!("models/pyraminx.obj"))?;
+        let (vertex_buffer, vertex_memory) =
+            unsafe { Self::create_vertex_buffer(&instance, physical_device, &device, &mesh)? };
 
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family)
@@ -128,7 +232,53 @@ impl VulkanApp {
             render_finished,
             in_flight,
             resources,
+            vertex_buffer,
+            vertex_memory,
+            vertex_count: mesh.len() as u32,
+            started_at: Instant::now(),
         })
+    }
+
+    unsafe fn create_vertex_buffer(
+        instance: &ash::Instance,
+        physical_device: vk::PhysicalDevice,
+        device: &ash::Device,
+        vertices: &[Vertex],
+    ) -> Result<(vk::Buffer, vk::DeviceMemory), Box<dyn Error>> {
+        let size = (vertices.len() * size_of::<Vertex>()) as vk::DeviceSize;
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(size)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let buffer = unsafe { device.create_buffer(&buffer_info, None)? };
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        let properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let memory_type = (0..properties.memory_type_count)
+            .find(|index| {
+                requirements.memory_type_bits & (1 << index) != 0
+                    && properties.memory_types[*index as usize]
+                        .property_flags
+                        .contains(
+                            vk::MemoryPropertyFlags::HOST_VISIBLE
+                                | vk::MemoryPropertyFlags::HOST_COHERENT,
+                        )
+            })
+            .ok_or("No host-visible coherent memory for OBJ vertex buffer")?;
+        let allocate_info = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(memory_type);
+        let memory = unsafe { device.allocate_memory(&allocate_info, None)? };
+        unsafe {
+            device.bind_buffer_memory(buffer, memory, 0)?;
+            let mapped = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
+            ptr::copy_nonoverlapping(
+                vertices.as_ptr().cast::<u8>(),
+                mapped.cast::<u8>(),
+                size as usize,
+            );
+            device.unmap_memory(memory);
+        }
+        Ok((buffer, memory))
     }
 
     unsafe fn pick_physical_device(
@@ -259,28 +409,128 @@ impl VulkanApp {
             image_views.push(unsafe { device.create_image_view(&view_info, None)? });
         }
 
-        let attachments = [vk::AttachmentDescription::default()
-            .format(surface_format.format)
+        let depth_format = [
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,
+        ]
+        .into_iter()
+        .find(|format| {
+            let properties =
+                unsafe { instance.get_physical_device_format_properties(physical_device, *format) };
+            properties
+                .optimal_tiling_features
+                .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+        })
+        .ok_or("No supported depth-buffer format")?;
+        let depth_image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(depth_format)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        let depth_image = unsafe { device.create_image(&depth_image_info, None)? };
+        let depth_requirements = unsafe { device.get_image_memory_requirements(depth_image) };
+        let memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
+        let depth_memory_type = (0..memory_properties.memory_type_count)
+            .find(|index| {
+                depth_requirements.memory_type_bits & (1 << index) != 0
+                    && memory_properties.memory_types[*index as usize]
+                        .property_flags
+                        .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .ok_or("No device-local memory for depth buffer")?;
+        let depth_memory = unsafe {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(depth_requirements.size)
+                    .memory_type_index(depth_memory_type),
+                None,
+            )?
+        };
+        unsafe { device.bind_image_memory(depth_image, depth_memory, 0)? };
+        let depth_aspect = if matches!(
+            depth_format,
+            vk::Format::D32_SFLOAT_S8_UINT | vk::Format::D24_UNORM_S8_UINT
+        ) {
+            vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL
+        } else {
+            vk::ImageAspectFlags::DEPTH
+        };
+        let depth_view = unsafe {
+            device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(depth_image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(depth_format)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: depth_aspect,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    }),
+                None,
+            )?
+        };
+
+        let attachments = [
+            vk::AttachmentDescription::default()
+                .format(surface_format.format)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+            vk::AttachmentDescription::default()
+                .format(depth_format)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL),
+        ];
         let color_attachment = [vk::AttachmentReference {
             attachment: 0,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         }];
+        let depth_attachment = vk::AttachmentReference {
+            attachment: 1,
+            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
         let subpasses = [vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-            .color_attachments(&color_attachment)];
+            .color_attachments(&color_attachment)
+            .depth_stencil_attachment(&depth_attachment)];
         let dependencies = [vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+            .src_stage_mask(
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            )
+            .dst_stage_mask(
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                    | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            )
+            .dst_access_mask(
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                    | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            )];
         let render_pass_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(&subpasses)
@@ -289,11 +539,11 @@ impl VulkanApp {
 
         let vertex_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/triangle.vert.spv"
+            "/pyraminx.vert.spv"
         ))))?;
         let fragment_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/triangle.frag.spv"
+            "/pyraminx.frag.spv"
         ))))?;
         let vertex_module = unsafe {
             device.create_shader_module(
@@ -318,7 +568,28 @@ impl VulkanApp {
                 .module(fragment_module)
                 .name(&entry_name),
         ];
-        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+        let vertex_bindings = [vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: size_of::<Vertex>() as u32,
+            input_rate: vk::VertexInputRate::VERTEX,
+        }];
+        let vertex_attributes = [
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 0,
+            },
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: size_of::<[f32; 3]>() as u32,
+            },
+        ];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&vertex_bindings)
+            .vertex_attribute_descriptions(&vertex_attributes);
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
             .primitive_restart_enable(false);
@@ -344,9 +615,24 @@ impl VulkanApp {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
         let dynamic_state =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
+        let push_constant_ranges = [vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            offset: 0,
+            size: size_of::<f32>() as u32,
+        }];
         let pipeline_layout = unsafe {
-            device.create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?
+            device.create_pipeline_layout(
+                &vk::PipelineLayoutCreateInfo::default()
+                    .push_constant_ranges(&push_constant_ranges),
+                None,
+            )?
         };
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
         let pipeline_info = [vk::GraphicsPipelineCreateInfo::default()
             .stages(&stages)
             .vertex_input_state(&vertex_input)
@@ -354,6 +640,7 @@ impl VulkanApp {
             .viewport_state(&viewport_state)
             .rasterization_state(&rasterization)
             .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil)
             .color_blend_state(&color_blending)
             .dynamic_state(&dynamic_state)
             .layout(pipeline_layout)
@@ -371,7 +658,7 @@ impl VulkanApp {
 
         let mut framebuffers = Vec::with_capacity(image_views.len());
         for image_view in &image_views {
-            let attachments = [*image_view];
+            let attachments = [*image_view, depth_view];
             let framebuffer_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)
@@ -390,6 +677,9 @@ impl VulkanApp {
             pipeline,
             framebuffers,
             extent,
+            depth_image,
+            depth_memory,
+            depth_view,
         })
     }
 
@@ -406,7 +696,8 @@ impl VulkanApp {
             let command_buffer = self.command_buffers[image_index as usize];
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
-            self.record_commands(command_buffer, image_index)?;
+            let angle = self.started_at.elapsed().as_secs_f32() * 0.8;
+            self.record_commands(command_buffer, image_index, angle)?;
             self.device.reset_fences(&[self.in_flight])?;
             let wait_semaphores = [self.image_available];
             let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -437,16 +728,25 @@ impl VulkanApp {
         &self,
         command_buffer: vk::CommandBuffer,
         image_index: u32,
+        angle: f32,
     ) -> Result<(), Box<dyn Error>> {
         unsafe {
             let begin_info = vk::CommandBufferBeginInfo::default();
             self.device
                 .begin_command_buffer(command_buffer, &begin_info)?;
-            let clear_values = [vk::ClearValue {
-                color: vk::ClearColorValue {
-                    float32: [0.03, 0.03, 0.06, 1.0],
+            let clear_values = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: [0.03, 0.03, 0.06, 1.0],
+                    },
                 },
-            }];
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth: 1.0,
+                        stencil: 0,
+                    },
+                },
+            ];
             let render_pass_info = vk::RenderPassBeginInfo::default()
                 .render_pass(self.resources.render_pass)
                 .framebuffer(self.resources.framebuffers[image_index as usize])
@@ -464,6 +764,15 @@ impl VulkanApp {
                 command_buffer,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.resources.pipeline,
+            );
+            self.device
+                .cmd_bind_vertex_buffers(command_buffer, 0, &[self.vertex_buffer], &[0]);
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.resources.pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                std::slice::from_raw_parts((&angle as *const f32).cast::<u8>(), size_of::<f32>()),
             );
             self.device.cmd_set_viewport(
                 command_buffer,
@@ -485,7 +794,8 @@ impl VulkanApp {
                     extent: self.resources.extent,
                 }],
             );
-            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.device
+                .cmd_draw(command_buffer, self.vertex_count, 1, 0, 0);
             self.device.cmd_end_render_pass(command_buffer);
             self.device.end_command_buffer(command_buffer)?;
         }
@@ -502,6 +812,8 @@ impl Drop for VulkanApp {
             self.device.destroy_semaphore(self.image_available, None);
             self.device.destroy_command_pool(self.command_pool, None);
             self.resources.destroy(&self.device);
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_memory, None);
             self.device.destroy_device(None);
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
@@ -512,17 +824,17 @@ impl Drop for VulkanApp {
 struct ExampleApp {
     app: Option<VulkanApp>,
     window: Option<Arc<Window>>,
-    rendered: bool,
 }
 
 impl ApplicationHandler for ExampleApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::Poll);
         if self.window.is_some() {
             return;
         }
 
         let attributes: WindowAttributes = Window::default_attributes()
-            .with_title("Vulkan triangle")
+            .with_title("Rotating Pyraminx")
             .with_inner_size(PhysicalSize::new(800, 600))
             .with_resizable(false);
         let window = match event_loop.create_window(attributes) {
@@ -541,7 +853,6 @@ impl ApplicationHandler for ExampleApp {
                 return;
             }
         };
-        window.request_redraw();
         self.window = Some(window);
         self.app = Some(app);
     }
@@ -562,20 +873,24 @@ impl ApplicationHandler for ExampleApp {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested if !self.rendered => {
+            WindowEvent::RedrawRequested => {
                 let result = self
                     .app
                     .as_ref()
                     .expect("Vulkan app is initialized with the window")
                     .draw_frame();
                 if let Err(error) = result {
-                    eprintln!("Failed to draw triangle: {error}");
+                    eprintln!("Failed to draw Pyraminx: {error}");
                     event_loop.exit();
-                } else {
-                    self.rendered = true;
                 }
             }
             _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 }
@@ -585,7 +900,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     event_loop.run_app(&mut ExampleApp {
         app: None,
         window: None,
-        rendered: false,
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pyraminx_obj_loads_four_colored_faces() {
+        let vertices = parse_obj(include_str!("models/pyraminx.obj")).unwrap();
+
+        assert_eq!(vertices.len(), 12);
+        assert_eq!(vertices[0].color, [0.95, 0.12, 0.12]);
+        assert_eq!(vertices[3].color, [0.12, 0.32, 0.95]);
+        assert_eq!(vertices[6].color, [0.98, 0.78, 0.08]);
+        assert_eq!(vertices[9].color, [0.08, 0.72, 0.24]);
+    }
+
+    #[test]
+    fn obj_parser_triangulates_polygon_faces() {
+        let vertices = parse_obj(
+            "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\ng blue\nf 1 2 3 4\n",
+        )
+        .unwrap();
+
+        assert_eq!(vertices.len(), 6);
+        assert!(vertices.iter().all(|vertex| vertex.color == [0.12, 0.32, 0.95]));
+    }
 }

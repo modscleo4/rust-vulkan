@@ -4,8 +4,8 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
 
     for (source_path, output_name) in [
-        ("src/shaders/triangle.vert.wgsl", "triangle.vert.spv"),
-        ("src/shaders/triangle.frag.wgsl", "triangle.frag.spv"),
+        ("src/shaders/pyraminx.vert.wgsl", "pyraminx.vert.spv"),
+        ("src/shaders/pyraminx.frag.wgsl", "pyraminx.frag.spv"),
     ] {
         println!("cargo:rerun-if-changed={source_path}");
         let source = fs::read_to_string(source_path).expect("read shader source");
@@ -17,14 +17,13 @@ fn main() {
         )
         .validate(&module)
         .expect("validate shader");
-        let words = naga::back::spv::write_vec(
-            &module,
-            &info,
-            &naga::back::spv::Options::default(),
-            None,
-        )
-        .expect("compile shader to SPIR-V");
-        let bytes = words.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+        let words =
+            naga::back::spv::write_vec(&module, &info, &naga::back::spv::Options::default(), None)
+                .expect("compile shader to SPIR-V");
+        let bytes = words
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
         fs::write(out_dir.join(output_name), bytes).expect("write SPIR-V");
     }
 }
