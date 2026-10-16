@@ -4,8 +4,8 @@ fn main() {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by Cargo"));
 
     for (source_path, output_name) in [
-        ("src/shaders/scene.vert.wgsl", "scene.vert.spv"),
-        ("src/shaders/scene.frag.wgsl", "scene.frag.spv"),
+        ("shaders/scene.vert.wgsl", "scene.vert.spv"),
+        ("shaders/scene.frag.wgsl", "scene.frag.spv"),
     ] {
         println!("cargo:rerun-if-changed={source_path}");
         let source = fs::read_to_string(source_path).expect("read shader source");

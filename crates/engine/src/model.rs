@@ -18,7 +18,7 @@ pub(crate) struct Instance {
     pub(crate) position: [f32; 3],
     pub(crate) rotation: [f32; 3],
     pub(crate) scale: [f32; 3],
-    pub(crate) animation_axes: [bool; 3],
+    pub(crate) model_index: usize,
 }
 
 impl Instance {
@@ -28,7 +28,7 @@ impl Instance {
         position: [f32; 3],
         rotation: [f32; 3],
         scale: [f32; 3],
-        animation_axes: [bool; 3],
+        model_index: usize,
     ) -> Self {
         Self {
             model,
@@ -36,15 +36,7 @@ impl Instance {
             position,
             rotation,
             scale,
-            animation_axes,
-        }
-    }
-
-    pub(crate) fn update_rotation(&mut self, animation_angle: f32) {
-        for (rotation, animated) in self.rotation.iter_mut().zip(self.animation_axes) {
-            if animated {
-                *rotation = animation_angle;
-            }
+            model_index,
         }
     }
 }
@@ -131,7 +123,7 @@ mod tests {
                 [-0.33, 0.58, 0.0],
                 [0.0; 3],
                 [0.42; 3],
-                [true, false, false],
+                0,
             ),
             Instance::new(
                 Arc::clone(&model),
@@ -139,7 +131,7 @@ mod tests {
                 [0.0; 3],
                 [0.0; 3],
                 [1.0; 3],
-                [false; 3],
+                0,
             ),
         ];
 
@@ -151,16 +143,13 @@ mod tests {
         assert_eq!(instances[0].position, [-0.33, 0.58, 0.0]);
         assert_eq!(instances[0].rotation, [0.0; 3]);
         assert_eq!(instances[0].scale, [0.42; 3]);
-        let mut instance = instances.into_iter().next().unwrap();
-        instance.update_rotation(1.5);
-        assert_eq!(instance.rotation, [1.5, 0.0, 0.0]);
-        instance.update_rotation(2.0);
-        assert_eq!(instance.rotation, [2.0, 0.0, 0.0]);
+        assert_eq!(instances[0].model_index, 0);
+        assert_eq!(instances[1].model_index, 0);
     }
 
     #[test]
     fn pyraminx_gltf_loads_four_colored_faces() {
-        let model = load_gltf(include_bytes!("models/pyraminx.gltf")).unwrap();
+        let model = load_gltf(include_bytes!("../tests/fixtures/pyraminx.gltf")).unwrap();
 
         assert_eq!(model.name, "Pyraminx");
         assert_eq!(model.vertices.len(), 12);

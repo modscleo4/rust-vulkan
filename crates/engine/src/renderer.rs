@@ -11,14 +11,11 @@ use winit::{
 };
 
 use crate::{
-    config::{CameraConfig, SceneConfig},
+    config::{CameraConfig, SceneConfig, ShaderConfig},
     model::{Instance, Vertex, load_gltf},
     picking,
+    scene::Scene,
 };
-
-fn animation_angle(elapsed_seconds: f32, speed: f32) -> f32 {
-    (elapsed_seconds * speed).rem_euclid(std::f32::consts::TAU)
-}
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -70,7 +67,6 @@ pub(crate) struct VulkanApp {
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
     instances: Vec<Instance>,
-    animation_speed: f32,
     background_color: [f32; 4],
     camera: CameraConfig,
     cursor_position: Option<[f64; 2]>,
@@ -84,7 +80,11 @@ pub(crate) struct VulkanApp {
 }
 
 impl VulkanApp {
-    pub(crate) fn new(window: &Window, scene: &SceneConfig) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(
+        window: &Window,
+        scene: &SceneConfig,
+        shaders: &ShaderConfig,
+    ) -> Result<Self, Box<dyn Error>> {
         if scene.models.is_empty() {
             return Err("Scene must contain at least one model".into());
         }
@@ -112,7 +112,7 @@ impl VulkanApp {
                     config.position,
                     config.rotation,
                     config.scale,
-                    config.animation_axes,
+                    config.model_index,
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -169,6 +169,7 @@ impl VulkanApp {
                 surface,
                 queue_family,
                 window,
+                shaders,
             )?
         };
         let allocate_info = vk::CommandBufferAllocateInfo::default()
@@ -217,7 +218,6 @@ impl VulkanApp {
             vertex_buffer,
             vertex_memory,
             instances,
-            animation_speed: scene.animation_speed,
             background_color: scene.background_color,
             camera: scene.camera,
             cursor_position: None,
@@ -321,6 +321,7 @@ impl VulkanApp {
         surface: vk::SurfaceKHR,
         queue_family: u32,
         window: &Window,
+        shaders: &ShaderConfig,
     ) -> Result<SwapchainResources, Box<dyn Error>> {
         let formats = unsafe {
             surface_loader.get_physical_device_surface_formats(physical_device, surface)?
@@ -529,14 +530,8 @@ impl VulkanApp {
             .dependencies(&dependencies);
         let render_pass = unsafe { device.create_render_pass(&render_pass_info, None)? };
 
-        let vertex_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/scene.vert.spv"
-        ))))?;
-        let fragment_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/scene.frag.spv"
-        ))))?;
+        let vertex_code = ash::util::read_spv(&mut Cursor::new(shaders.vertex))?;
+        let fragment_code = ash::util::read_spv(&mut Cursor::new(shaders.fragment))?;
         let vertex_module = unsafe {
             device.create_shader_module(
                 &vk::ShaderModuleCreateInfo::default().code(&vertex_code),
@@ -708,20 +703,18 @@ impl VulkanApp {
         &mut self,
         window: &Window,
         show_debug_menu: bool,
+        scene: &mut Scene,
     ) -> Result<(), Box<dyn Error>> {
         let now = Instant::now();
-        self.imgui
-            .io_mut()
-            .update_delta_time(now.duration_since(self.last_frame_at));
+        let frame_duration = now.duration_since(self.last_frame_at);
+        self.imgui.io_mut().update_delta_time(frame_duration);
         self.last_frame_at = now;
         self.imgui_platform
             .prepare_frame(self.imgui.io_mut(), window)?;
 
+        scene.on_update(frame_duration.as_secs_f32());
+        self.apply_scene_config(scene.config())?;
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
-        let angle = animation_angle(elapsed_seconds, self.animation_speed);
-        for instance in &mut self.instances {
-            instance.update_rotation(angle);
-        }
 
         self.hovered_instance = if show_debug_menu && !self.imgui.io().want_capture_mouse {
             self.cursor_position.and_then(|position| {
@@ -801,6 +794,29 @@ impl VulkanApp {
                 .loader
                 .queue_present(self.queue, &present_info)?;
         }
+        Ok(())
+    }
+
+    fn apply_scene_config(&mut self, scene: &SceneConfig) -> Result<(), Box<dyn Error>> {
+        if scene.instances.len() != self.instances.len() {
+            return Err("Scene instance count cannot change after startup".into());
+        }
+
+        for (instance, config) in self.instances.iter_mut().zip(&scene.instances) {
+            if instance.model_index != config.model_index {
+                return Err(format!(
+                    "Instance '{}' cannot change models after startup",
+                    instance.name
+                )
+                .into());
+            }
+            instance.name.clone_from(&config.name);
+            instance.position = config.position;
+            instance.rotation = config.rotation;
+            instance.scale = config.scale;
+        }
+        self.camera = scene.camera;
+        self.background_color = scene.background_color;
         Ok(())
     }
 
@@ -931,18 +947,5 @@ impl Drop for VulkanApp {
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn animation_angle_uses_configured_speed_and_wraps() {
-        let period = std::f32::consts::TAU / 1.2;
-
-        assert!(animation_angle(period, 1.2).abs() < 1e-6);
-        assert!((animation_angle(period * 0.25, 1.2) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 }

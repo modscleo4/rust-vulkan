@@ -1,0 +1,12 @@
+[package]
+name = "pyraminx-game"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+vulkan-engine = { path = "../engine" }
+winit = "0.30"
+
+[build-dependencies]
+naga = { version = "0.20", features = ["wgsl-in", "spv-out"] }

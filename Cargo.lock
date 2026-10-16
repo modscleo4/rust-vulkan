@@ -1299,6 +1299,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "pyraminx-game"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "vulkan-engine",
+ "winit",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,7 +1812,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vulkan"
+name = "vulkan-engine"
 version = "0.1.0"
 dependencies = [
  "ash",
@@ -1812,7 +1821,6 @@ dependencies = [
  "imgui",
  "imgui-rs-vulkan-renderer",
  "imgui-winit-support",
- "naga",
  "raw-window-handle",
  "winit",
 ]

@@ -1,0 +1,192 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "OBJ conversion with baked Pyraminx face colors"
+  },
+  "extensionsUsed": [
+    "KHR_materials_unlit"
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [0]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "Pyraminx"
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Pyraminx",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0,
+          "mode": 4
+        },
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 3,
+          "material": 1,
+          "mode": 4
+        },
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 4,
+          "material": 2,
+          "mode": 4
+        },
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 5,
+          "material": 3,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "red",
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_unlit": {}
+      },
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.95, 0.12, 0.12, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    },
+    {
+      "name": "blue",
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_unlit": {}
+      },
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.12, 0.32, 0.95, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    },
+    {
+      "name": "yellow",
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_unlit": {}
+      },
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.98, 0.78, 0.08, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    },
+    {
+      "name": "green",
+      "doubleSided": true,
+      "extensions": {
+        "KHR_materials_unlit": {}
+      },
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.08, 0.72, 0.24, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 1.0
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 312,
+      "uri": "data:application/octet-stream;base64,AAAAAGZmZj8AAAAAzcxMv2Zm5r5mZuY+zcxMP2Zm5r5mZuY+AAAAAGZmZj8AAAAAAAAAAGZm5r5mZma/zcxMv2Zm5r5mZuY+AAAAAGZmZj8AAAAAzcxMP2Zm5r5mZuY+AAAAAGZm5r5mZma/zcxMv2Zm5r5mZuY+AAAAAGZm5r5mZma/zcxMP2Zm5r5mZuY+AAAAAJvooT7p3HI/AAAAAJvooT7p3HI/AAAAAJvooT7p3HI/QYVQv8jBpD6rIve+QYVQv8jBpD6rIve+QYVQv8jBpD6rIve+QYVQP8jBpD6rIve+QYVQP8jBpD6rIve+QYVQP8jBpD6rIve+AAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAABAAIAAwAEAAUABgAHAAgACQAKAAsA"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 144,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 144,
+      "byteLength": 144,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 24,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 12,
+      "type": "VEC3",
+      "min": [-0.8, -0.45, -0.9],
+      "max": [0.8, 0.9, 0.45]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 12,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 0,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR",
+      "min": [0],
+      "max": [2]
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 6,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR",
+      "min": [3],
+      "max": [5]
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 12,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR",
+      "min": [6],
+      "max": [8]
+    },
+    {
+      "bufferView": 2,
+      "byteOffset": 18,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR",
+      "min": [9],
+      "max": [11]
+    }
+  ]
+}

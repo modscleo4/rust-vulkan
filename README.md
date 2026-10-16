@@ -11,48 +11,45 @@ The Vulkan SDK is not needed to build the project; WGSL shaders are compiled to 
 
 ## Build and run
 
-From the project directory:
+From the workspace root:
 
 ```powershell
-cargo run
+cargo run -p pyraminx-game
 ```
 
-Cargo builds the application and launches it. The default window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required.
+Cargo builds the game and engine crates and launches the application. The default window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required.
 
 ## Configure the scene in code
 
-The example setup lives in `AppConfig::default()` in `src/config.rs`. `src/main.rs` passes that configuration to the app, so you can adjust the window, embedded model assets, instances, camera, animation speed, and background color there. For example, replace the body of `main` with:
+The Pyraminx game setup lives in `game_config()` in `crates/game/src/main.rs`. It uses configuration types and the `run` function exported by the engine crate. A `Scene` is created from its model, instance, camera, and background configuration. Register `set_on_start` and `set_on_update` callbacks for game-specific initialization and per-frame behavior; the update callback receives the frame delta in seconds and mutable instance transforms.
+
+To show another embedded glTF model, add its bytes to `SceneConfig.models` and add an instance whose `model_index` points to that entry:
 
 ```rust
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = config::AppConfig::default();
-    config.window.title = "My Vulkan Scene".to_owned();
-    config.window.size = [1280, 720];
-    config.window.resizable = true;
-    config.scene.animation_speed = 1.2;
-    config.scene.background_color = [0.02, 0.04, 0.08, 1.0];
-    config.scene.instances.truncate(1);
-    config.scene.instances[0].name = "Example".to_owned();
-    config.scene.instances[0].animation_axes = [false, true, false];
-    app::run(config)
-}
-```
-
-To show another embedded glTF model, add its bytes to `config.scene.models` and add an instance whose `model_index` points to that entry:
-
-```rust
-config.scene.models.push(include_bytes!("models/another.gltf"));
-config.scene.instances.push(config::InstanceConfig {
-    name: "Second model".to_owned(),
-    model_index: 1,
-    position: [0.5, 0.0, 0.0],
-    rotation: [0.0; 3],
-    scale: [0.5; 3],
-    animation_axes: [false; 3],
+let scene = Scene::new(SceneConfig {
+    models: vec![
+        include_bytes!("../assets/pyraminx.gltf"),
+        include_bytes!("../assets/another.gltf"),
+    ],
+    instances: vec![InstanceConfig {
+        name: "Second model".to_owned(),
+        model_index: 1,
+        position: [0.5, 0.0, 0.0],
+        rotation: [0.0; 3],
+        scale: [0.5; 3],
+    }],
+    background_color: [0.03, 0.03, 0.06, 1.0],
+    camera: CameraConfig {
+        projection: [1.05, 1.4],
+        distance: 3.0,
+        depth_scale: 1.333333,
+    },
 });
 ```
 
-Multiple instances may share a model and independently set their name, transform, and animated axes.
+Multiple instances may share a model and independently set their name and transform. Model assignments and scene layout are fixed after startup; update callbacks can change instance names and transforms. Set camera and background settings when creating the scene. The `vulkan-engine` crate handles windowing, scene rendering, picking, and debug UI; a different game can depend on it and provide its own scene, shaders, and assets.
+
+The Pyraminx shader sources are in `crates/game/shaders/` and are compiled to SPIR-V by that crate's build script. Supply shader bytes through `ShaderConfig`; other games can compile and provide their own shaders.
 
 ## Controls
 
@@ -70,23 +67,20 @@ Run the unit tests with:
 cargo test
 ```
 
-The tests cover loading and validating the embedded Pyraminx mesh and the renderer's triangle-picking intersection logic.
+The tests cover scene lifecycle callbacks, loading and validating the embedded Pyraminx mesh, and the renderer's triangle-picking intersection logic.
 
 ## Project layout
 
 ```text
-src/
-  app.rs                         Window and event-loop handling
-  main.rs                        Application entry point
-  config.rs                      Window, camera, scene, and instance configuration
-  model.rs                       glTF mesh loading and instance transforms
-  picking.rs                     Ray-based scene-object picking
-  renderer.rs                    Vulkan rendering
-  debug.rs                       ImGui debug and object-information windows
-  models/pyraminx.gltf           Embedded, four-color Pyraminx mesh
-  shaders/scene.vert.wgsl        Generic scene vertex shader source
-  shaders/scene.frag.wgsl        Generic scene fragment shader source
-build.rs                         Compiles WGSL shaders to SPIR-V
+crates/
+  engine/                        Reusable Vulkan engine library
+    src/                         Windowing, config, rendering, picking, debug UI
+    tests/fixtures/               glTF loader test asset
+  game/                          Pyraminx game crate and executable
+    src/main.rs                  Game scene setup and executable entry point
+    shaders/                     Game WGSL shaders
+    build.rs                     Compiles WGSL shaders to SPIR-V
+    assets/pyraminx.gltf         Embedded, four-color Pyraminx mesh
 ```
 
 See [LICENSE](LICENSE) for licensing information.

@@ -9,8 +9,7 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-use crate::config::AppConfig;
-use crate::renderer::VulkanApp;
+use crate::{config::AppConfig, renderer::VulkanApp};
 
 struct ExampleApp {
     app: Option<VulkanApp>,
@@ -41,7 +40,8 @@ impl ApplicationHandler for ExampleApp {
                 return;
             }
         };
-        let app = match VulkanApp::new(&window, &self.config.scene) {
+        self.config.scene.on_start();
+        let app = match VulkanApp::new(&window, self.config.scene.config(), &self.config.shaders) {
             Ok(app) => app,
             Err(error) => {
                 eprintln!("Failed to initialize scene: {error}");
@@ -89,7 +89,7 @@ impl ApplicationHandler for ExampleApp {
                     .app
                     .as_mut()
                     .expect("Vulkan app is initialized with the window")
-                    .draw_frame(window, self.show_debug_menu);
+                    .draw_frame(window, self.show_debug_menu, &mut self.config.scene);
                 if let Err(error) = result {
                     eprintln!("Failed to draw scene: {error}");
                     event_loop.exit();
@@ -106,7 +106,7 @@ impl ApplicationHandler for ExampleApp {
     }
 }
 
-pub(crate) fn run(config: AppConfig) -> Result<(), Box<dyn Error>> {
+pub fn run(config: AppConfig) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut ExampleApp {
         app: None,
