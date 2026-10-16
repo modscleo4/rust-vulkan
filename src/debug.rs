@@ -10,7 +10,7 @@ pub(crate) fn draw_windows(
     selected_instance: Option<usize>,
     angle: f32,
     object_window_open: &mut bool,
-    object_window_position: Option<[f32; 2]>,
+    object_window_position: Option<([f32; 2], [f32; 2])>,
 ) {
     if !show_debug_menu {
         return;
@@ -62,8 +62,10 @@ pub(crate) fn draw_windows(
         .window(&title)
         .opened(&mut is_open)
         .always_auto_resize(true);
-    if let Some(position) = object_window_position {
-        window = window.position(position, Condition::Appearing);
+    if let Some((position, pivot)) = object_window_position {
+        window = window
+            .position(position, Condition::Appearing)
+            .position_pivot(pivot);
     }
     window.build(|| {
         ui.text(format!(
@@ -102,4 +104,45 @@ pub(crate) fn draw_windows(
         ));
     });
     *object_window_open = is_open;
+}
+
+pub(crate) fn object_window_anchor(
+    cursor: [f32; 2],
+    display_size: [f32; 2],
+) -> ([f32; 2], [f32; 2]) {
+    let pivot = [
+        if cursor[0] < display_size[0] * 0.5 {
+            0.0
+        } else {
+            1.0
+        },
+        if cursor[1] < display_size[1] * 0.5 {
+            0.0
+        } else {
+            1.0
+        },
+    ];
+    let offset = [
+        if pivot[0] == 0.0 { 12.0 } else { -12.0 },
+        if pivot[1] == 0.0 { 12.0 } else { -12.0 },
+    ];
+
+    ([cursor[0] + offset[0], cursor[1] + offset[1]], pivot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::object_window_anchor;
+
+    #[test]
+    fn object_window_anchors_away_from_nearest_edges() {
+        assert_eq!(
+            object_window_anchor([790.0, 590.0], [800.0, 600.0]),
+            ([778.0, 578.0], [1.0, 1.0])
+        );
+        assert_eq!(
+            object_window_anchor([10.0, 10.0], [800.0, 600.0]),
+            ([22.0, 22.0], [0.0, 0.0])
+        );
+    }
 }

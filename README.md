@@ -21,7 +21,7 @@ Cargo builds the application and launches it. The window is 800 × 600 and is no
 
 ## Controls
 
-- **F3** — Show or hide the debug overlay.
+- **F3** — Show or hide the debug overlay and hovered-model highlight. The hovered Pyraminx gets a 2-pixel inverted-color border.
 - **Right-click a Pyraminx while the overlay is visible** — Open its object-information panel. Right-click elsewhere to dismiss it.
 - **Close the window** — Exit the application.
 

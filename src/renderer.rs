@@ -63,9 +63,10 @@ pub(crate) struct VulkanApp {
     vertex_memory: vk::DeviceMemory,
     model: Model,
     cursor_position: Option<[f64; 2]>,
+    hovered_instance: Option<usize>,
     object_window_open: bool,
     selected_instance: Option<usize>,
-    object_window_position: Option<[f32; 2]>,
+    object_window_position: Option<([f32; 2], [f32; 2])>,
     imgui: Context,
     imgui_platform: WinitPlatform,
     imgui_renderer: Option<ImGuiRenderer>,
@@ -175,6 +176,7 @@ impl VulkanApp {
             vertex_memory,
             model: mesh,
             cursor_position: None,
+            hovered_instance: None,
             object_window_open: false,
             selected_instance: None,
             object_window_position: None,
@@ -667,10 +669,18 @@ impl VulkanApp {
                 if picked.is_some() {
                     self.object_window_position = self.cursor_position.map(|position| {
                         let scale_factor = window.scale_factor();
-                        [
-                            (position[0] / scale_factor) as f32 + 12.0,
-                            (position[1] / scale_factor) as f32 + 12.0,
-                        ]
+                        let logical_position = [
+                            (position[0] / scale_factor) as f32,
+                            (position[1] / scale_factor) as f32,
+                        ];
+                        let size = window.inner_size();
+                        crate::debug::object_window_anchor(
+                            logical_position,
+                            [
+                                size.width as f32 / scale_factor as f32,
+                                size.height as f32 / scale_factor as f32,
+                            ],
+                        )
                     });
                 }
             }
@@ -689,8 +699,7 @@ impl VulkanApp {
             return None;
         }
 
-        let ndc_x = (2.0 * cursor[0] / f64::from(width) - 1.0) as f32;
-        let ndc_y = (2.0 * cursor[1] / f64::from(height) - 1.0) as f32;
+        let [ndc_x, ndc_y] = screen_to_ndc(cursor, width, height)?;
         let angle = elapsed_seconds * 0.8;
         PYRAMINX_INSTANCES
             .iter()
@@ -737,6 +746,14 @@ impl VulkanApp {
 
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
         let angle = elapsed_seconds * 0.8;
+        self.hovered_instance = if show_debug_menu && !self.imgui.io().want_capture_mouse {
+            self.cursor_position.and_then(|position| {
+                let size = window.inner_size();
+                self.pick_object(position, elapsed_seconds, size.width, size.height)
+            })
+        } else {
+            None
+        };
         let ui = self.imgui.frame();
         crate::debug::draw_windows(
             ui,
@@ -771,6 +788,7 @@ impl VulkanApp {
                 command_buffer,
                 image_index,
                 angle,
+                self.hovered_instance,
                 self.imgui_renderer
                     .as_mut()
                     .expect("ImGui renderer is initialized with the Vulkan app"),
@@ -810,6 +828,7 @@ impl VulkanApp {
         command_buffer: vk::CommandBuffer,
         image_index: u32,
         angle: f32,
+        hovered_instance: Option<usize>,
         imgui_renderer: &mut ImGuiRenderer,
         draw_data: &DrawData,
     ) -> Result<(), Box<dyn Error>> {
@@ -868,10 +887,11 @@ impl VulkanApp {
                     extent: resources.extent,
                 }],
             );
-            for instance in &PYRAMINX_INSTANCES {
+            for (instance_index, instance) in PYRAMINX_INSTANCES.iter().enumerate() {
                 let angles = instance
                     .axes
                     .map(|rotates| if rotates { angle } else { 0.0 });
+                let is_hovered = hovered_instance == Some(instance_index);
                 let push_constants = [
                     angles[0],
                     angles[1],
@@ -880,7 +900,7 @@ impl VulkanApp {
                     instance.position[0],
                     instance.position[1],
                     0.42,
-                    0.0,
+                    if is_hovered { 1.0 } else { 0.0 },
                 ];
                 device.cmd_push_constants(
                     command_buffer,
@@ -900,6 +920,17 @@ impl VulkanApp {
         }
         Ok(())
     }
+}
+
+fn screen_to_ndc(cursor: [f64; 2], width: u32, height: u32) -> Option<[f32; 2]> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    Some([
+        (2.0 * cursor[0] / f64::from(width) - 1.0) as f32,
+        (1.0 - 2.0 * cursor[1] / f64::from(height)) as f32,
+    ])
 }
 
 fn ray_intersects_triangle(
@@ -1020,5 +1051,12 @@ mod tests {
         assert!(rotated[0].abs() < 1e-6);
         assert!((rotated[1] + 3.0).abs() < 1e-6);
         assert!(rotated[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn screen_to_ndc_maps_top_to_positive_y() {
+        assert_eq!(screen_to_ndc([400.0, 0.0], 800, 600), Some([0.0, 1.0]));
+        assert_eq!(screen_to_ndc([400.0, 600.0], 800, 600), Some([0.0, -1.0]));
+        assert_eq!(screen_to_ndc([0.0, 0.0], 0, 600), None);
     }
 }

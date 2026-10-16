@@ -13,10 +13,12 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec3<f32>,
+    @location(1) outline: f32,
+    @location(2) barycentric: vec3<f32>,
 }
 
 @vertex
-fn main(input: VertexInput) -> VertexOutput {
+fn main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     let sin_x = sin(rotation.angles.x);
     let cos_x = cos(rotation.angles.x);
     let rotated_x = vec3<f32>(
@@ -48,5 +50,14 @@ fn main(input: VertexInput) -> VertexOutput {
         camera_z,
     );
     output.color = input.color;
+    output.outline = rotation.instance.w;
+    let vertex_in_triangle = vertex_index % 3u;
+    if vertex_in_triangle == 0u {
+        output.barycentric = vec3<f32>(1.0, 0.0, 0.0);
+    } else if vertex_in_triangle == 1u {
+        output.barycentric = vec3<f32>(0.0, 1.0, 0.0);
+    } else {
+        output.barycentric = vec3<f32>(0.0, 0.0, 1.0);
+    }
     return output;
 }
