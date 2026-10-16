@@ -10,7 +10,7 @@ use winit::{
     window::Window,
 };
 
-use crate::model::{Vertex, load_gltf};
+use crate::model::{Model, Vertex, load_gltf};
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -61,9 +61,7 @@ pub(crate) struct VulkanApp {
     resources: SwapchainResources,
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
-    vertex_count: u32,
-    object_name: String,
-    object_vertices: Vec<Vertex>,
+    model: Model,
     cursor_position: Option<[f64; 2]>,
     object_window_open: bool,
     object_window_position: Option<[f32; 2]>,
@@ -174,9 +172,7 @@ impl VulkanApp {
             resources,
             vertex_buffer,
             vertex_memory,
-            vertex_count: mesh.vertices.len() as u32,
-            object_name: mesh.name,
-            object_vertices: mesh.vertices,
+            model: mesh,
             cursor_position: None,
             object_window_open: false,
             object_window_position: None,
@@ -700,7 +696,7 @@ impl VulkanApp {
         let ray_origin = rotate_to_object_space(ray_origin_rotated);
         let ray_direction = rotate_to_object_space(ray_direction_rotated);
 
-        self.object_vertices.chunks_exact(3).any(|triangle| {
+        self.model.vertices.chunks_exact(3).any(|triangle| {
             ray_intersects_triangle(
                 ray_origin,
                 ray_direction,
@@ -727,67 +723,15 @@ impl VulkanApp {
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
         let angle = elapsed_seconds * 0.8;
         let ui = self.imgui.frame();
-        if show_debug_menu {
-            ui.window("Debug Menu (F3)")
-                .size([300.0, 120.0], imgui::Condition::FirstUseEver)
-                .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-                .title_bar(false)
-                .resizable(false)
-                .build(|| {
-                    ui.text(format!("Frame rate: {:.1} FPS", ui.io().framerate));
-                    ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
-                    ui.text(format!("Scene vertices: {}", self.vertex_count));
-                });
-            if self.object_window_open {
-                let min =
-                    self.object_vertices
-                        .iter()
-                        .fold([f32::INFINITY; 3], |mut bounds, vertex| {
-                            for (axis, value) in vertex.position.iter().enumerate() {
-                                bounds[axis] = bounds[axis].min(*value);
-                            }
-                            bounds
-                        });
-                let max = self.object_vertices.iter().fold(
-                    [f32::NEG_INFINITY; 3],
-                    |mut bounds, vertex| {
-                        for (axis, value) in vertex.position.iter().enumerate() {
-                            bounds[axis] = bounds[axis].max(*value);
-                        }
-                        bounds
-                    },
-                );
-                let mut object_window_open = self.object_window_open;
-                let object_window_title = format!("Object: {}", self.object_name);
-                let mut object_window = ui
-                    .window(&object_window_title)
-                    .opened(&mut object_window_open)
-                    .size([300.0, 230.0], imgui::Condition::FirstUseEver);
-                if let Some(position) = self.object_window_position {
-                    object_window = object_window.position(position, imgui::Condition::Appearing);
-                }
-                object_window.build(|| {
-                    ui.text("Position: (0.00, 0.00, 0.00)");
-                    ui.text(format!(
-                        "Rotation: (0.00, {:.1}, 0.00) deg",
-                        angle.to_degrees()
-                    ));
-                    ui.text("Scale: (1.00, 1.00, 1.00)");
-                    ui.separator();
-                    ui.text(format!("Vertices: {}", self.vertex_count));
-                    ui.text(format!("Triangles: {}", self.vertex_count / 3));
-                    ui.text(format!(
-                        "Bounds min: ({:.2}, {:.2}, {:.2})",
-                        min[0], min[1], min[2]
-                    ));
-                    ui.text(format!(
-                        "Bounds max: ({:.2}, {:.2}, {:.2})",
-                        max[0], max[1], max[2]
-                    ));
-                });
-                self.object_window_open = object_window_open;
-            }
-        }
+        crate::debug::draw_windows(
+            ui,
+            show_debug_menu,
+            elapsed_seconds,
+            angle,
+            &self.model,
+            &mut self.object_window_open,
+            self.object_window_position,
+        );
         self.imgui_platform.prepare_render(ui, window);
         let draw_data = self.imgui.render();
 
@@ -807,7 +751,7 @@ impl VulkanApp {
                 &self.device,
                 &self.resources,
                 self.vertex_buffer,
-                self.vertex_count,
+                self.model.vertices.len() as u32,
                 command_buffer,
                 image_index,
                 angle,
