@@ -12,6 +12,50 @@ pub(crate) struct Model {
     pub(crate) vertices: Vec<Vertex>,
 }
 
+pub(crate) struct PyraminxInstance {
+    pub(crate) direction: &'static str,
+    pub(crate) axes: [bool; 3],
+    pub(crate) position: [f32; 2],
+}
+
+pub(crate) const PYRAMINX_INSTANCES: [PyraminxInstance; 7] = [
+    PyraminxInstance {
+        direction: "X",
+        axes: [true, false, false],
+        position: [-0.33, 0.58],
+    },
+    PyraminxInstance {
+        direction: "Y",
+        axes: [false, true, false],
+        position: [0.33, 0.58],
+    },
+    PyraminxInstance {
+        direction: "Z",
+        axes: [false, false, true],
+        position: [-0.66, 0.0],
+    },
+    PyraminxInstance {
+        direction: "XY",
+        axes: [true, true, false],
+        position: [0.0, 0.0],
+    },
+    PyraminxInstance {
+        direction: "XZ",
+        axes: [true, false, true],
+        position: [0.66, 0.0],
+    },
+    PyraminxInstance {
+        direction: "YZ",
+        axes: [false, true, true],
+        position: [-0.33, -0.58],
+    },
+    PyraminxInstance {
+        direction: "XYZ",
+        axes: [true, true, true],
+        position: [0.33, -0.58],
+    },
+];
+
 pub(crate) fn load_gltf(source: &[u8]) -> Result<Model, Box<dyn Error>> {
     let (document, buffers, _) = gltf::import_slice(source)?;
     let name = document

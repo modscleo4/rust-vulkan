@@ -1,6 +1,6 @@
 # Rotating Pyraminx
 
-A small Rust desktop application that renders a continuously rotating, four-color Pyraminx using Vulkan. The model is loaded from an embedded glTF asset, and a Dear ImGui debug overlay provides basic runtime and object information.
+A small Rust desktop application that renders seven continuously rotating, four-color Pyraminx models using Vulkan. Each rotates around a different combination of the X, Y, and Z axes (X, Y, Z, XY, XZ, YZ, and XYZ). The model is loaded from an embedded glTF asset, and a Dear ImGui debug overlay provides basic runtime and object information.
 
 ## Requirements
 
@@ -22,10 +22,10 @@ Cargo builds the application and launches it. The window is 800 × 600 and is no
 ## Controls
 
 - **F3** — Show or hide the debug overlay.
-- **Right-click the Pyraminx while the overlay is visible** — Open its object-information panel. Right-click elsewhere to dismiss it.
+- **Right-click a Pyraminx while the overlay is visible** — Open its object-information panel. Right-click elsewhere to dismiss it.
 - **Close the window** — Exit the application.
 
-The debug overlay displays the frame rate, uptime, and scene vertex count. The object panel displays the model's transform, vertex and triangle counts, and bounds.
+The debug overlay displays the frame rate, uptime, and total scene vertex count. The object panel displays the selected model's rotation direction, transform, vertex and triangle counts, and bounds.
 
 ## Tests
 

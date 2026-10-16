@@ -1,13 +1,14 @@
 use imgui::{Condition, Ui};
 
-use crate::model::Model;
+use crate::model::{Model, PYRAMINX_INSTANCES};
 
 pub(crate) fn draw_windows(
     ui: &Ui,
     show_debug_menu: bool,
     elapsed_seconds: f32,
-    angle: f32,
     model: &Model,
+    selected_instance: Option<usize>,
+    angle: f32,
     object_window_open: &mut bool,
     object_window_position: Option<[f32; 2]>,
 ) {
@@ -23,7 +24,10 @@ pub(crate) fn draw_windows(
         .build(|| {
             ui.text(format!("Frame rate: {:.1} FPS", ui.io().framerate));
             ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
-            ui.text(format!("Scene vertices: {}", model.vertices.len()));
+            ui.text(format!(
+                "Scene vertices: {}",
+                model.vertices.len() * PYRAMINX_INSTANCES.len()
+            ));
         });
 
     if !*object_window_open {
@@ -48,8 +52,12 @@ pub(crate) fn draw_windows(
             }
             bounds
         });
+    let Some(instance) = selected_instance.and_then(|index| PYRAMINX_INSTANCES.get(index)) else {
+        *object_window_open = false;
+        return;
+    };
     let mut is_open = *object_window_open;
-    let title = format!("Object: {}", model.name);
+    let title = format!("Object: {} ({})", model.name, instance.direction);
     let mut window = ui
         .window(&title)
         .opened(&mut is_open)
@@ -58,12 +66,29 @@ pub(crate) fn draw_windows(
         window = window.position(position, Condition::Appearing);
     }
     window.build(|| {
-        ui.text("Position: (0.00, 0.00, 0.00)");
         ui.text(format!(
-            "Rotation: (0.00, {:.1}, 0.00) deg",
-            angle.to_degrees()
+            "Layout position: ({:.2}, {:.2})",
+            instance.position[0], instance.position[1]
         ));
-        ui.text("Scale: (1.00, 1.00, 1.00)");
+        ui.text(format!(
+            "Rotation: ({:.1}, {:.1}, {:.1}) deg",
+            if instance.axes[0] {
+                angle.to_degrees()
+            } else {
+                0.0
+            },
+            if instance.axes[1] {
+                angle.to_degrees()
+            } else {
+                0.0
+            },
+            if instance.axes[2] {
+                angle.to_degrees()
+            } else {
+                0.0
+            },
+        ));
+        ui.text("Scale: (0.42, 0.42, 1.00)");
         ui.separator();
         ui.text(format!("Vertices: {}", model.vertices.len()));
         ui.text(format!("Triangles: {}", model.vertices.len() / 3));

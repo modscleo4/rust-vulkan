@@ -10,7 +10,7 @@ use winit::{
     window::Window,
 };
 
-use crate::model::{Model, Vertex, load_gltf};
+use crate::model::{Model, PYRAMINX_INSTANCES, Vertex, load_gltf};
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -64,6 +64,7 @@ pub(crate) struct VulkanApp {
     model: Model,
     cursor_position: Option<[f64; 2]>,
     object_window_open: bool,
+    selected_instance: Option<usize>,
     object_window_position: Option<[f32; 2]>,
     imgui: Context,
     imgui_platform: WinitPlatform,
@@ -175,6 +176,7 @@ impl VulkanApp {
             model: mesh,
             cursor_position: None,
             object_window_open: false,
+            selected_instance: None,
             object_window_position: None,
             imgui,
             imgui_platform,
@@ -563,7 +565,7 @@ impl VulkanApp {
         let push_constant_ranges = [vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX,
             offset: 0,
-            size: size_of::<f32>() as u32,
+            size: (size_of::<f32>() * 8) as u32,
         }];
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
@@ -651,17 +653,18 @@ impl VulkanApp {
                 button: winit::event::MouseButton::Right,
                 ..
             } if show_debug_menu && !self.imgui.io().want_capture_mouse => {
-                let picked = self.cursor_position.is_some_and(|position| {
-                    let angle = self.started_at.elapsed().as_secs_f32() * 0.8;
+                let picked = self.cursor_position.and_then(|position| {
+                    let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
                     self.pick_object(
                         position,
-                        angle,
+                        elapsed_seconds,
                         window.inner_size().width,
                         window.inner_size().height,
                     )
                 });
-                self.object_window_open = picked;
-                if picked {
+                self.object_window_open = picked.is_some();
+                self.selected_instance = picked;
+                if picked.is_some() {
                     self.object_window_position = self.cursor_position.map(|position| {
                         let scale_factor = window.scale_factor();
                         [
@@ -675,36 +678,48 @@ impl VulkanApp {
         }
     }
 
-    fn pick_object(&self, cursor: [f64; 2], angle: f32, width: u32, height: u32) -> bool {
+    fn pick_object(
+        &self,
+        cursor: [f64; 2],
+        elapsed_seconds: f32,
+        width: u32,
+        height: u32,
+    ) -> Option<usize> {
         if width == 0 || height == 0 {
-            return false;
+            return None;
         }
 
         let ndc_x = (2.0 * cursor[0] / f64::from(width) - 1.0) as f32;
         let ndc_y = (2.0 * cursor[1] / f64::from(height) - 1.0) as f32;
-        let ray_origin_rotated = [0.0, 0.0, -3.0];
-        let ray_direction_rotated = [ndc_x / 1.05, ndc_y / 1.4, 1.0];
-        let cosine = angle.cos();
-        let sine = angle.sin();
-        let rotate_to_object_space = |point: [f32; 3]| {
-            [
-                cosine * point[0] - sine * point[2],
-                point[1],
-                sine * point[0] + cosine * point[2],
-            ]
-        };
-        let ray_origin = rotate_to_object_space(ray_origin_rotated);
-        let ray_direction = rotate_to_object_space(ray_direction_rotated);
-
-        self.model.vertices.chunks_exact(3).any(|triangle| {
-            ray_intersects_triangle(
-                ray_origin,
-                ray_direction,
-                triangle[0].position,
-                triangle[1].position,
-                triangle[2].position,
-            )
-        })
+        let angle = elapsed_seconds * 0.8;
+        PYRAMINX_INSTANCES
+            .iter()
+            .enumerate()
+            .find_map(|(instance_index, instance)| {
+                let angles = instance
+                    .axes
+                    .map(|rotates| if rotates { angle } else { 0.0 });
+                let ray_direction = [
+                    (ndc_x - instance.position[0]) / (1.05 * 0.42),
+                    (ndc_y - instance.position[1]) / (1.4 * 0.42),
+                    1.0,
+                ];
+                let ray_origin = rotate_to_object_space([0.0, 0.0, -3.0], angles);
+                let ray_direction = rotate_to_object_space(ray_direction, angles);
+                self.model
+                    .vertices
+                    .chunks_exact(3)
+                    .any(|triangle| {
+                        ray_intersects_triangle(
+                            ray_origin,
+                            ray_direction,
+                            triangle[0].position,
+                            triangle[1].position,
+                            triangle[2].position,
+                        )
+                    })
+                    .then_some(instance_index)
+            })
     }
 
     pub(crate) fn draw_frame(
@@ -727,8 +742,9 @@ impl VulkanApp {
             ui,
             show_debug_menu,
             elapsed_seconds,
-            angle,
             &self.model,
+            self.selected_instance,
+            angle,
             &mut self.object_window_open,
             self.object_window_position,
         );
@@ -832,13 +848,6 @@ impl VulkanApp {
                 resources.pipeline,
             );
             device.cmd_bind_vertex_buffers(command_buffer, 0, &[vertex_buffer], &[0]);
-            device.cmd_push_constants(
-                command_buffer,
-                resources.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts((&angle as *const f32).cast::<u8>(), size_of::<f32>()),
-            );
             device.cmd_set_viewport(
                 command_buffer,
                 0,
@@ -859,7 +868,32 @@ impl VulkanApp {
                     extent: resources.extent,
                 }],
             );
-            device.cmd_draw(command_buffer, vertex_count, 1, 0, 0);
+            for instance in &PYRAMINX_INSTANCES {
+                let angles = instance
+                    .axes
+                    .map(|rotates| if rotates { angle } else { 0.0 });
+                let push_constants = [
+                    angles[0],
+                    angles[1],
+                    angles[2],
+                    0.0,
+                    instance.position[0],
+                    instance.position[1],
+                    0.42,
+                    0.0,
+                ];
+                device.cmd_push_constants(
+                    command_buffer,
+                    resources.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    std::slice::from_raw_parts(
+                        push_constants.as_ptr().cast::<u8>(),
+                        size_of::<[f32; 8]>(),
+                    ),
+                );
+                device.cmd_draw(command_buffer, vertex_count, 1, 0, 0);
+            }
             imgui_renderer.cmd_draw(command_buffer, draw_data)?;
             device.cmd_end_render_pass(command_buffer);
             device.end_command_buffer(command_buffer)?;
@@ -913,6 +947,28 @@ fn ray_intersects_triangle(
     dot(edge_b, perpendicular) * inverse_determinant > 0.0
 }
 
+fn rotate_to_object_space(point: [f32; 3], angles: [f32; 3]) -> [f32; 3] {
+    let [angle_x, angle_y, angle_z] = angles;
+    let (sin_z, cos_z) = (-angle_z).sin_cos();
+    let rotated_z = [
+        cos_z * point[0] - sin_z * point[1],
+        sin_z * point[0] + cos_z * point[1],
+        point[2],
+    ];
+    let (sin_y, cos_y) = (-angle_y).sin_cos();
+    let rotated_y = [
+        cos_y * rotated_z[0] + sin_y * rotated_z[2],
+        rotated_z[1],
+        -sin_y * rotated_z[0] + cos_y * rotated_z[2],
+    ];
+    let (sin_x, cos_x) = (-angle_x).sin_cos();
+    [
+        rotated_y[0],
+        cos_x * rotated_y[1] - sin_x * rotated_y[2],
+        sin_x * rotated_y[1] + cos_x * rotated_y[2],
+    ]
+}
+
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         unsafe {
@@ -954,5 +1010,15 @@ mod tests {
             triangle[1],
             triangle[2],
         ));
+    }
+
+    #[test]
+    fn inverse_rotation_transforms_the_camera_origin() {
+        let rotated =
+            rotate_to_object_space([0.0, 0.0, -3.0], [std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
+
+        assert!(rotated[0].abs() < 1e-6);
+        assert!((rotated[1] + 3.0).abs() < 1e-6);
+        assert!(rotated[2].abs() < 1e-6);
     }
 }
