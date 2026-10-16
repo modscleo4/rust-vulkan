@@ -1,7 +1,8 @@
 struct Rotation {
     angles: vec4<f32>,
     position: vec4<f32>,
-    scale_outline: vec4<f32>,
+    scale_and_outline: vec4<f32>,
+    camera: vec4<f32>,
 }
 
 var<push_constant> rotation: Rotation;
@@ -20,7 +21,7 @@ struct VertexOutput {
 
 @vertex
 fn main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    let scaled = input.position * rotation.scale_outline.xyz;
+    let scaled = input.position * rotation.scale_and_outline.xyz;
     let sin_x = sin(rotation.angles.x);
     let cos_x = cos(rotation.angles.x);
     let rotated_x = vec3<f32>(
@@ -42,16 +43,16 @@ fn main(input: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexO
         sin_z * rotated_y.x + cos_z * rotated_y.y,
         rotated_y.z,
     );
-    let camera_z = rotated.z + rotation.position.z + 3.0;
+    let camera_z = rotated.z + rotation.position.z + rotation.position.w;
     var output: VertexOutput;
     output.position = vec4<f32>(
-        rotated.x * 1.05 + rotation.position.x * camera_z,
-        rotated.y * 1.4 + rotation.position.y * camera_z,
-        camera_z * 1.333333 - 1.333333,
+        rotated.x * rotation.camera.x + rotation.position.x * camera_z,
+        rotated.y * rotation.camera.y + rotation.position.y * camera_z,
+        camera_z * rotation.camera.z - rotation.camera.z,
         camera_z,
     );
     output.color = input.color;
-    output.outline = rotation.scale_outline.w;
+    output.outline = rotation.scale_and_outline.w;
     let vertex_in_triangle = vertex_index % 3u;
     if vertex_in_triangle == 0u {
         output.barycentric = vec3<f32>(1.0, 0.0, 0.0);

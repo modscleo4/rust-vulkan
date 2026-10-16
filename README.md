@@ -1,6 +1,6 @@
 # Rotating Pyraminx
 
-A small Rust desktop application that renders seven continuously rotating, four-color Pyraminx models using Vulkan. Each rotates around a different combination of the X, Y, and Z axes (X, Y, Z, XY, XZ, YZ, and XYZ). The model is loaded from an embedded glTF asset, and a Dear ImGui debug overlay provides basic runtime and object information.
+A small Rust desktop application that renders configurable glTF scenes using Vulkan. The default scene shows seven continuously rotating, four-color Pyraminx models; a Dear ImGui debug overlay provides basic runtime and object information.
 
 ## Requirements
 
@@ -17,7 +17,42 @@ From the project directory:
 cargo run
 ```
 
-Cargo builds the application and launches it. The window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required.
+Cargo builds the application and launches it. The default window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required.
+
+## Configure the scene in code
+
+The example setup lives in `AppConfig::default()` in `src/config.rs`. `src/main.rs` passes that configuration to the app, so you can adjust the window, embedded model assets, instances, camera, animation speed, and background color there. For example, replace the body of `main` with:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = config::AppConfig::default();
+    config.window.title = "My Vulkan Scene".to_owned();
+    config.window.size = [1280, 720];
+    config.window.resizable = true;
+    config.scene.animation_speed = 1.2;
+    config.scene.background_color = [0.02, 0.04, 0.08, 1.0];
+    config.scene.instances.truncate(1);
+    config.scene.instances[0].name = "Example".to_owned();
+    config.scene.instances[0].animation_axes = [false, true, false];
+    app::run(config)
+}
+```
+
+To show another embedded glTF model, add its bytes to `config.scene.models` and add an instance whose `model_index` points to that entry:
+
+```rust
+config.scene.models.push(include_bytes!("models/another.gltf"));
+config.scene.instances.push(config::InstanceConfig {
+    name: "Second model".to_owned(),
+    model_index: 1,
+    position: [0.5, 0.0, 0.0],
+    rotation: [0.0; 3],
+    scale: [0.5; 3],
+    animation_axes: [false; 3],
+});
+```
+
+Multiple instances may share a model and independently set their name, transform, and animated axes.
 
 ## Controls
 
@@ -43,11 +78,14 @@ The tests cover loading and validating the embedded Pyraminx mesh and the render
 src/
   app.rs                         Window and event-loop handling
   main.rs                        Application entry point
-  model.rs                       glTF mesh loading
-  renderer.rs                    Vulkan rendering and debug UI
+  config.rs                      Window, camera, scene, and instance configuration
+  model.rs                       glTF mesh loading and instance transforms
+  picking.rs                     Ray-based scene-object picking
+  renderer.rs                    Vulkan rendering
+  debug.rs                       ImGui debug and object-information windows
   models/pyraminx.gltf           Embedded, four-color Pyraminx mesh
-  shaders/pyraminx.vert.wgsl     Vertex shader source
-  shaders/pyraminx.frag.wgsl     Fragment shader source
+  shaders/scene.vert.wgsl        Generic scene vertex shader source
+  shaders/scene.frag.wgsl        Generic scene fragment shader source
 build.rs                         Compiles WGSL shaders to SPIR-V
 ```
 

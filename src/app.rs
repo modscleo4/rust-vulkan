@@ -5,16 +5,18 @@ use winit::{
     dpi::PhysicalSize,
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::PhysicalKey,
     window::{Window, WindowAttributes},
 };
 
+use crate::config::AppConfig;
 use crate::renderer::VulkanApp;
 
 struct ExampleApp {
     app: Option<VulkanApp>,
     window: Option<Arc<Window>>,
     show_debug_menu: bool,
+    config: AppConfig,
 }
 
 impl ApplicationHandler for ExampleApp {
@@ -25,9 +27,12 @@ impl ApplicationHandler for ExampleApp {
         }
 
         let attributes: WindowAttributes = Window::default_attributes()
-            .with_title("Rotating Pyraminx")
-            .with_inner_size(PhysicalSize::new(800, 600))
-            .with_resizable(false);
+            .with_title(&self.config.window.title)
+            .with_inner_size(PhysicalSize::new(
+                self.config.window.size[0],
+                self.config.window.size[1],
+            ))
+            .with_resizable(self.config.window.resizable);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -36,10 +41,10 @@ impl ApplicationHandler for ExampleApp {
                 return;
             }
         };
-        let app = match VulkanApp::new(&window) {
+        let app = match VulkanApp::new(&window, &self.config.scene) {
             Ok(app) => app,
             Err(error) => {
-                eprintln!("Failed to initialize Vulkan: {error}");
+                eprintln!("Failed to initialize scene: {error}");
                 event_loop.exit();
                 return;
             }
@@ -71,7 +76,7 @@ impl ApplicationHandler for ExampleApp {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && !event.repeat
-                    && event.physical_key == PhysicalKey::Code(KeyCode::F3) =>
+                    && event.physical_key == PhysicalKey::Code(self.config.debug_toggle_key) =>
             {
                 self.show_debug_menu = !self.show_debug_menu;
             }
@@ -86,7 +91,7 @@ impl ApplicationHandler for ExampleApp {
                     .expect("Vulkan app is initialized with the window")
                     .draw_frame(window, self.show_debug_menu);
                 if let Err(error) = result {
-                    eprintln!("Failed to draw Pyraminx: {error}");
+                    eprintln!("Failed to draw scene: {error}");
                     event_loop.exit();
                 }
             }
@@ -101,12 +106,13 @@ impl ApplicationHandler for ExampleApp {
     }
 }
 
-pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+pub(crate) fn run(config: AppConfig) -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
     event_loop.run_app(&mut ExampleApp {
         app: None,
         window: None,
-        show_debug_menu: false,
+        show_debug_menu: config.show_debug_menu_on_start,
+        config,
     })?;
     Ok(())
 }

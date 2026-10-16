@@ -10,10 +10,14 @@ use winit::{
     window::Window,
 };
 
-use crate::model::{Instance, Vertex, create_pyraminx_instances, load_gltf};
+use crate::{
+    config::{CameraConfig, SceneConfig},
+    model::{Instance, Vertex, load_gltf},
+    picking,
+};
 
-fn animation_angle(elapsed_seconds: f32) -> f32 {
-    (elapsed_seconds * 0.8).rem_euclid(std::f32::consts::TAU)
+fn animation_angle(elapsed_seconds: f32, speed: f32) -> f32 {
+    (elapsed_seconds * speed).rem_euclid(std::f32::consts::TAU)
 }
 
 struct SwapchainResources {
@@ -65,7 +69,10 @@ pub(crate) struct VulkanApp {
     resources: SwapchainResources,
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
-    instances: [Instance; 7],
+    instances: Vec<Instance>,
+    animation_speed: f32,
+    background_color: [f32; 4],
+    camera: CameraConfig,
     cursor_position: Option<[f64; 2]>,
     hovered_instance: Option<usize>,
     selected_instance: Option<usize>,
@@ -77,9 +84,40 @@ pub(crate) struct VulkanApp {
 }
 
 impl VulkanApp {
-    pub(crate) fn new(window: &Window) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(window: &Window, scene: &SceneConfig) -> Result<Self, Box<dyn Error>> {
+        if scene.models.is_empty() {
+            return Err("Scene must contain at least one model".into());
+        }
+        if scene.instances.is_empty() {
+            return Err("Scene must contain at least one instance".into());
+        }
+        let models = scene
+            .models
+            .iter()
+            .map(|model_data| load_gltf(model_data).map(Arc::new))
+            .collect::<Result<Vec<_>, _>>()?;
+        let instances = scene
+            .instances
+            .iter()
+            .map(|config| {
+                let model = models.get(config.model_index).ok_or_else(|| {
+                    format!(
+                        "Instance '{}' references missing model {}",
+                        config.name, config.model_index
+                    )
+                })?;
+                Ok(Instance::new(
+                    Arc::clone(model),
+                    config.name.clone(),
+                    config.position,
+                    config.rotation,
+                    config.scale,
+                    config.animation_axes,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let entry = unsafe { Entry::load()? };
-        let app_name = CString::new("Rotating Pyraminx")?;
+        let app_name = CString::new("Vulkan Scene")?;
         let app_info = vk::ApplicationInfo::default()
             .application_name(&app_name)
             .application_version(vk::make_api_version(0, 1, 0, 0))
@@ -111,8 +149,6 @@ impl VulkanApp {
             .enabled_extension_names(&device_extensions);
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
-        let model = Arc::new(load_gltf(include_bytes!("models/pyraminx.gltf"))?);
-        let instances = create_pyraminx_instances(Arc::clone(&model));
         let vertices = instances
             .iter()
             .flat_map(|instance| instance.model.vertices.iter().copied())
@@ -181,6 +217,9 @@ impl VulkanApp {
             vertex_buffer,
             vertex_memory,
             instances,
+            animation_speed: scene.animation_speed,
+            background_color: scene.background_color,
+            camera: scene.camera,
             cursor_position: None,
             hovered_instance: None,
             selected_instance: None,
@@ -216,7 +255,7 @@ impl VulkanApp {
                                 | vk::MemoryPropertyFlags::HOST_COHERENT,
                         )
             })
-            .ok_or("No host-visible coherent memory for OBJ vertex buffer")?;
+            .ok_or("No host-visible coherent memory for scene vertex buffer")?;
         let allocate_info = vk::MemoryAllocateInfo::default()
             .allocation_size(requirements.size)
             .memory_type_index(memory_type);
@@ -492,11 +531,11 @@ impl VulkanApp {
 
         let vertex_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/pyraminx.vert.spv"
+            "/scene.vert.spv"
         ))))?;
         let fragment_code = ash::util::read_spv(&mut Cursor::new(include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/pyraminx.frag.spv"
+            "/scene.frag.spv"
         ))))?;
         let vertex_module = unsafe {
             device.create_shader_module(
@@ -571,7 +610,7 @@ impl VulkanApp {
         let push_constant_ranges = [vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX,
             offset: 0,
-            size: (size_of::<f32>() * 12) as u32,
+            size: (size_of::<f32>() * 16) as u32,
         }];
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
@@ -665,52 +704,6 @@ impl VulkanApp {
         }
     }
 
-    fn pick_object(&self, cursor: [f64; 2], width: u32, height: u32) -> Option<usize> {
-        if width == 0 || height == 0 {
-            return None;
-        }
-
-        let [ndc_x, ndc_y] = screen_to_ndc(cursor, width, height)?;
-        self.instances
-            .iter()
-            .enumerate()
-            .find_map(|(instance_index, instance)| {
-                if instance
-                    .scale
-                    .iter()
-                    .any(|scale| scale.abs() < f32::EPSILON)
-                {
-                    return None;
-                }
-                let ray_direction = [
-                    (ndc_x - instance.position[0]) / 1.05,
-                    (ndc_y - instance.position[1]) / 1.4,
-                    1.0,
-                ];
-                let ray_origin = rotate_to_object_space(
-                    [0.0, 0.0, -3.0 - instance.position[2]],
-                    instance.rotation,
-                );
-                let ray_direction = rotate_to_object_space(ray_direction, instance.rotation);
-                let ray_origin = divide_by_scale(ray_origin, instance.scale);
-                let ray_direction = divide_by_scale(ray_direction, instance.scale);
-                instance
-                    .model
-                    .vertices
-                    .chunks_exact(3)
-                    .any(|triangle| {
-                        ray_intersects_triangle(
-                            ray_origin,
-                            ray_direction,
-                            triangle[0].position,
-                            triangle[1].position,
-                            triangle[2].position,
-                        )
-                    })
-                    .then_some(instance_index)
-            })
-    }
-
     pub(crate) fn draw_frame(
         &mut self,
         window: &Window,
@@ -725,7 +718,7 @@ impl VulkanApp {
             .prepare_frame(self.imgui.io_mut(), window)?;
 
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
-        let angle = animation_angle(elapsed_seconds);
+        let angle = animation_angle(elapsed_seconds, self.animation_speed);
         for instance in &mut self.instances {
             instance.update_rotation(angle);
         }
@@ -733,7 +726,13 @@ impl VulkanApp {
         self.hovered_instance = if show_debug_menu && !self.imgui.io().want_capture_mouse {
             self.cursor_position.and_then(|position| {
                 let size = window.inner_size();
-                self.pick_object(position, size.width, size.height)
+                picking::pick_object(
+                    &self.instances,
+                    position,
+                    size.width,
+                    size.height,
+                    &self.camera,
+                )
             })
         } else {
             None
@@ -769,6 +768,8 @@ impl VulkanApp {
                 &self.resources,
                 self.vertex_buffer,
                 &self.instances,
+                self.background_color,
+                &self.camera,
                 command_buffer,
                 image_index,
                 self.hovered_instance,
@@ -808,6 +809,8 @@ impl VulkanApp {
         resources: &SwapchainResources,
         vertex_buffer: vk::Buffer,
         instances: &[Instance],
+        background_color: [f32; 4],
+        camera: &CameraConfig,
         command_buffer: vk::CommandBuffer,
         image_index: u32,
         hovered_instance: Option<usize>,
@@ -820,7 +823,7 @@ impl VulkanApp {
             let clear_values = [
                 vk::ClearValue {
                     color: vk::ClearColorValue {
-                        float32: [0.03, 0.03, 0.06, 1.0],
+                        float32: background_color,
                     },
                 },
                 vk::ClearValue {
@@ -880,11 +883,15 @@ impl VulkanApp {
                     instance.position[0],
                     instance.position[1],
                     instance.position[2],
-                    0.0,
+                    camera.distance,
                     instance.scale[0],
                     instance.scale[1],
                     instance.scale[2],
                     if is_hovered { 1.0 } else { 0.0 },
+                    camera.projection[0],
+                    camera.projection[1],
+                    camera.depth_scale,
+                    0.0,
                 ];
                 device.cmd_push_constants(
                     command_buffer,
@@ -893,7 +900,7 @@ impl VulkanApp {
                     0,
                     std::slice::from_raw_parts(
                         push_constants.as_ptr().cast::<u8>(),
-                        size_of::<[f32; 12]>(),
+                        size_of::<[f32; 16]>(),
                     ),
                 );
                 let vertex_count = instance.model.vertices.len() as u32;
@@ -906,92 +913,6 @@ impl VulkanApp {
         }
         Ok(())
     }
-}
-
-fn screen_to_ndc(cursor: [f64; 2], width: u32, height: u32) -> Option<[f32; 2]> {
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    Some([
-        (2.0 * cursor[0] / f64::from(width) - 1.0) as f32,
-        (1.0 - 2.0 * cursor[1] / f64::from(height)) as f32,
-    ])
-}
-
-fn ray_intersects_triangle(
-    origin: [f32; 3],
-    direction: [f32; 3],
-    vertex_a: [f32; 3],
-    vertex_b: [f32; 3],
-    vertex_c: [f32; 3],
-) -> bool {
-    let subtract = |left: [f32; 3], right: [f32; 3]| {
-        [left[0] - right[0], left[1] - right[1], left[2] - right[2]]
-    };
-    let cross = |left: [f32; 3], right: [f32; 3]| {
-        [
-            left[1] * right[2] - left[2] * right[1],
-            left[2] * right[0] - left[0] * right[2],
-            left[0] * right[1] - left[1] * right[0],
-        ]
-    };
-    let dot = |left: [f32; 3], right: [f32; 3]| {
-        left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
-    };
-
-    let edge_a = subtract(vertex_b, vertex_a);
-    let edge_b = subtract(vertex_c, vertex_a);
-    let perpendicular = cross(direction, edge_b);
-    let determinant = dot(edge_a, perpendicular);
-    if determinant.abs() < 1e-6 {
-        return false;
-    }
-
-    let inverse_determinant = determinant.recip();
-    let from_vertex = subtract(origin, vertex_a);
-    let u = dot(from_vertex, perpendicular) * inverse_determinant;
-    if !(0.0..=1.0).contains(&u) {
-        return false;
-    }
-
-    let perpendicular = cross(from_vertex, edge_a);
-    let v = dot(direction, perpendicular) * inverse_determinant;
-    if v < 0.0 || u + v > 1.0 {
-        return false;
-    }
-
-    dot(edge_b, perpendicular) * inverse_determinant > 0.0
-}
-
-fn rotate_to_object_space(point: [f32; 3], angles: [f32; 3]) -> [f32; 3] {
-    let [angle_x, angle_y, angle_z] = angles;
-    let (sin_z, cos_z) = (-angle_z).sin_cos();
-    let rotated_z = [
-        cos_z * point[0] - sin_z * point[1],
-        sin_z * point[0] + cos_z * point[1],
-        point[2],
-    ];
-    let (sin_y, cos_y) = (-angle_y).sin_cos();
-    let rotated_y = [
-        cos_y * rotated_z[0] + sin_y * rotated_z[2],
-        rotated_z[1],
-        -sin_y * rotated_z[0] + cos_y * rotated_z[2],
-    ];
-    let (sin_x, cos_x) = (-angle_x).sin_cos();
-    [
-        rotated_y[0],
-        cos_x * rotated_y[1] - sin_x * rotated_y[2],
-        sin_x * rotated_y[1] + cos_x * rotated_y[2],
-    ]
-}
-
-fn divide_by_scale(point: [f32; 3], scale: [f32; 3]) -> [f32; 3] {
-    [
-        point[0] / scale[0],
-        point[1] / scale[1],
-        point[2] / scale[2],
-    ]
 }
 
 impl Drop for VulkanApp {
@@ -1018,47 +939,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn animation_angle_wraps_at_a_full_radian_rotation() {
-        let period = std::f32::consts::TAU / 0.8;
+    fn animation_angle_uses_configured_speed_and_wraps() {
+        let period = std::f32::consts::TAU / 1.2;
 
-        assert!(animation_angle(period).abs() < 1e-6);
-        assert!((animation_angle(period * 0.25) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn ray_triangle_intersection_detects_hits_and_misses() {
-        let triangle = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]];
-
-        assert!(ray_intersects_triangle(
-            [0.0, 0.0, -2.0],
-            [0.0, 0.0, 1.0],
-            triangle[0],
-            triangle[1],
-            triangle[2],
-        ));
-        assert!(!ray_intersects_triangle(
-            [2.0, 2.0, -2.0],
-            [0.0, 0.0, 1.0],
-            triangle[0],
-            triangle[1],
-            triangle[2],
-        ));
-    }
-
-    #[test]
-    fn inverse_rotation_transforms_the_camera_origin() {
-        let rotated =
-            rotate_to_object_space([0.0, 0.0, -3.0], [std::f32::consts::FRAC_PI_2, 0.0, 0.0]);
-
-        assert!(rotated[0].abs() < 1e-6);
-        assert!((rotated[1] + 3.0).abs() < 1e-6);
-        assert!(rotated[2].abs() < 1e-6);
-    }
-
-    #[test]
-    fn screen_to_ndc_maps_top_to_positive_y() {
-        assert_eq!(screen_to_ndc([400.0, 0.0], 800, 600), Some([0.0, 1.0]));
-        assert_eq!(screen_to_ndc([400.0, 600.0], 800, 600), Some([0.0, -1.0]));
-        assert_eq!(screen_to_ndc([0.0, 0.0], 0, 600), None);
+        assert!(animation_angle(period, 1.2).abs() < 1e-6);
+        assert!((animation_angle(period * 0.25, 1.2) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 }
