@@ -1,4 +1,4 @@
-use std::{error::Error, ffi::CString, io::Cursor, mem::size_of, ptr, time::Instant};
+use std::{error::Error, ffi::CString, io::Cursor, mem::size_of, ptr, sync::Arc, time::Instant};
 
 use ash::{Entry, vk};
 use imgui::{Context, DrawData};
@@ -10,7 +10,11 @@ use winit::{
     window::Window,
 };
 
-use crate::model::{Model, PYRAMINX_INSTANCES, Vertex, load_gltf};
+use crate::model::{Instance, Vertex, create_pyraminx_instances, load_gltf};
+
+fn animation_angle(elapsed_seconds: f32) -> f32 {
+    (elapsed_seconds * 0.8).rem_euclid(std::f32::consts::TAU)
+}
 
 struct SwapchainResources {
     loader: ash::khr::swapchain::Device,
@@ -61,12 +65,10 @@ pub(crate) struct VulkanApp {
     resources: SwapchainResources,
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
-    model: Model,
+    instances: [Instance; 7],
     cursor_position: Option<[f64; 2]>,
     hovered_instance: Option<usize>,
-    object_window_open: bool,
     selected_instance: Option<usize>,
-    object_window_position: Option<([f32; 2], [f32; 2])>,
     imgui: Context,
     imgui_platform: WinitPlatform,
     imgui_renderer: Option<ImGuiRenderer>,
@@ -109,10 +111,14 @@ impl VulkanApp {
             .enabled_extension_names(&device_extensions);
         let device = unsafe { instance.create_device(physical_device, &device_info, None)? };
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
-        let mesh = load_gltf(include_bytes!("models/pyraminx.gltf"))?;
-        let (vertex_buffer, vertex_memory) = unsafe {
-            Self::create_vertex_buffer(&instance, physical_device, &device, &mesh.vertices)?
-        };
+        let model = Arc::new(load_gltf(include_bytes!("models/pyraminx.gltf"))?);
+        let instances = create_pyraminx_instances(Arc::clone(&model));
+        let vertices = instances
+            .iter()
+            .flat_map(|instance| instance.model.vertices.iter().copied())
+            .collect::<Vec<_>>();
+        let (vertex_buffer, vertex_memory) =
+            unsafe { Self::create_vertex_buffer(&instance, physical_device, &device, &vertices)? };
 
         let command_pool_info = vk::CommandPoolCreateInfo::default()
             .queue_family_index(queue_family)
@@ -174,12 +180,10 @@ impl VulkanApp {
             resources,
             vertex_buffer,
             vertex_memory,
-            model: mesh,
+            instances,
             cursor_position: None,
             hovered_instance: None,
-            object_window_open: false,
             selected_instance: None,
-            object_window_position: None,
             imgui,
             imgui_platform,
             imgui_renderer: Some(imgui_renderer),
@@ -567,7 +571,7 @@ impl VulkanApp {
         let push_constant_ranges = [vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX,
             offset: 0,
-            size: (size_of::<f32>() * 8) as u32,
+            size: (size_of::<f32>() * 12) as u32,
         }];
         let pipeline_layout = unsafe {
             device.create_pipeline_layout(
@@ -655,67 +659,43 @@ impl VulkanApp {
                 button: winit::event::MouseButton::Right,
                 ..
             } if show_debug_menu && !self.imgui.io().want_capture_mouse => {
-                let picked = self.cursor_position.and_then(|position| {
-                    let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
-                    self.pick_object(
-                        position,
-                        elapsed_seconds,
-                        window.inner_size().width,
-                        window.inner_size().height,
-                    )
-                });
-                self.object_window_open = picked.is_some();
-                self.selected_instance = picked;
-                if picked.is_some() {
-                    self.object_window_position = self.cursor_position.map(|position| {
-                        let scale_factor = window.scale_factor();
-                        let logical_position = [
-                            (position[0] / scale_factor) as f32,
-                            (position[1] / scale_factor) as f32,
-                        ];
-                        let size = window.inner_size();
-                        crate::debug::object_window_anchor(
-                            logical_position,
-                            [
-                                size.width as f32 / scale_factor as f32,
-                                size.height as f32 / scale_factor as f32,
-                            ],
-                        )
-                    });
-                }
+                self.selected_instance = self.hovered_instance;
             }
             _ => {}
         }
     }
 
-    fn pick_object(
-        &self,
-        cursor: [f64; 2],
-        elapsed_seconds: f32,
-        width: u32,
-        height: u32,
-    ) -> Option<usize> {
+    fn pick_object(&self, cursor: [f64; 2], width: u32, height: u32) -> Option<usize> {
         if width == 0 || height == 0 {
             return None;
         }
 
         let [ndc_x, ndc_y] = screen_to_ndc(cursor, width, height)?;
-        let angle = elapsed_seconds * 0.8;
-        PYRAMINX_INSTANCES
+        self.instances
             .iter()
             .enumerate()
             .find_map(|(instance_index, instance)| {
-                let angles = instance
-                    .axes
-                    .map(|rotates| if rotates { angle } else { 0.0 });
+                if instance
+                    .scale
+                    .iter()
+                    .any(|scale| scale.abs() < f32::EPSILON)
+                {
+                    return None;
+                }
                 let ray_direction = [
-                    (ndc_x - instance.position[0]) / (1.05 * 0.42),
-                    (ndc_y - instance.position[1]) / (1.4 * 0.42),
+                    (ndc_x - instance.position[0]) / 1.05,
+                    (ndc_y - instance.position[1]) / 1.4,
                     1.0,
                 ];
-                let ray_origin = rotate_to_object_space([0.0, 0.0, -3.0], angles);
-                let ray_direction = rotate_to_object_space(ray_direction, angles);
-                self.model
+                let ray_origin = rotate_to_object_space(
+                    [0.0, 0.0, -3.0 - instance.position[2]],
+                    instance.rotation,
+                );
+                let ray_direction = rotate_to_object_space(ray_direction, instance.rotation);
+                let ray_origin = divide_by_scale(ray_origin, instance.scale);
+                let ray_direction = divide_by_scale(ray_direction, instance.scale);
+                instance
+                    .model
                     .vertices
                     .chunks_exact(3)
                     .any(|triangle| {
@@ -745,11 +725,15 @@ impl VulkanApp {
             .prepare_frame(self.imgui.io_mut(), window)?;
 
         let elapsed_seconds = self.started_at.elapsed().as_secs_f32();
-        let angle = elapsed_seconds * 0.8;
+        let angle = animation_angle(elapsed_seconds);
+        for instance in &mut self.instances {
+            instance.update_rotation(angle);
+        }
+
         self.hovered_instance = if show_debug_menu && !self.imgui.io().want_capture_mouse {
             self.cursor_position.and_then(|position| {
                 let size = window.inner_size();
-                self.pick_object(position, elapsed_seconds, size.width, size.height)
+                self.pick_object(position, size.width, size.height)
             })
         } else {
             None
@@ -759,11 +743,11 @@ impl VulkanApp {
             ui,
             show_debug_menu,
             elapsed_seconds,
-            &self.model,
-            self.selected_instance,
-            angle,
-            &mut self.object_window_open,
-            self.object_window_position,
+            &self.instances,
+            &mut self.selected_instance,
+            self.cursor_position,
+            window.inner_size(),
+            window.scale_factor(),
         );
         self.imgui_platform.prepare_render(ui, window);
         let draw_data = self.imgui.render();
@@ -784,10 +768,9 @@ impl VulkanApp {
                 &self.device,
                 &self.resources,
                 self.vertex_buffer,
-                self.model.vertices.len() as u32,
+                &self.instances,
                 command_buffer,
                 image_index,
-                angle,
                 self.hovered_instance,
                 self.imgui_renderer
                     .as_mut()
@@ -824,10 +807,9 @@ impl VulkanApp {
         device: &ash::Device,
         resources: &SwapchainResources,
         vertex_buffer: vk::Buffer,
-        vertex_count: u32,
+        instances: &[Instance],
         command_buffer: vk::CommandBuffer,
         image_index: u32,
-        angle: f32,
         hovered_instance: Option<usize>,
         imgui_renderer: &mut ImGuiRenderer,
         draw_data: &DrawData,
@@ -887,19 +869,21 @@ impl VulkanApp {
                     extent: resources.extent,
                 }],
             );
-            for (instance_index, instance) in PYRAMINX_INSTANCES.iter().enumerate() {
-                let angles = instance
-                    .axes
-                    .map(|rotates| if rotates { angle } else { 0.0 });
+            let mut first_vertex = 0;
+            for (instance_index, instance) in instances.iter().enumerate() {
                 let is_hovered = hovered_instance == Some(instance_index);
                 let push_constants = [
-                    angles[0],
-                    angles[1],
-                    angles[2],
+                    instance.rotation[0],
+                    instance.rotation[1],
+                    instance.rotation[2],
                     0.0,
                     instance.position[0],
                     instance.position[1],
-                    0.42,
+                    instance.position[2],
+                    0.0,
+                    instance.scale[0],
+                    instance.scale[1],
+                    instance.scale[2],
                     if is_hovered { 1.0 } else { 0.0 },
                 ];
                 device.cmd_push_constants(
@@ -909,10 +893,12 @@ impl VulkanApp {
                     0,
                     std::slice::from_raw_parts(
                         push_constants.as_ptr().cast::<u8>(),
-                        size_of::<[f32; 8]>(),
+                        size_of::<[f32; 12]>(),
                     ),
                 );
-                device.cmd_draw(command_buffer, vertex_count, 1, 0, 0);
+                let vertex_count = instance.model.vertices.len() as u32;
+                device.cmd_draw(command_buffer, vertex_count, 1, first_vertex, 0);
+                first_vertex += vertex_count;
             }
             imgui_renderer.cmd_draw(command_buffer, draw_data)?;
             device.cmd_end_render_pass(command_buffer);
@@ -1000,6 +986,14 @@ fn rotate_to_object_space(point: [f32; 3], angles: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+fn divide_by_scale(point: [f32; 3], scale: [f32; 3]) -> [f32; 3] {
+    [
+        point[0] / scale[0],
+        point[1] / scale[1],
+        point[2] / scale[2],
+    ]
+}
+
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         unsafe {
@@ -1022,6 +1016,14 @@ impl Drop for VulkanApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_angle_wraps_at_a_full_radian_rotation() {
+        let period = std::f32::consts::TAU / 0.8;
+
+        assert!(animation_angle(period).abs() < 1e-6);
+        assert!((animation_angle(period * 0.25) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+    }
 
     #[test]
     fn ray_triangle_intersection_detects_hits_and_misses() {

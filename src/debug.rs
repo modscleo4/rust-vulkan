@@ -1,16 +1,17 @@
 use imgui::{Condition, Ui};
+use winit::dpi::PhysicalSize;
 
-use crate::model::{Model, PYRAMINX_INSTANCES};
+use crate::model::Instance;
 
 pub(crate) fn draw_windows(
     ui: &Ui,
     show_debug_menu: bool,
     elapsed_seconds: f32,
-    model: &Model,
-    selected_instance: Option<usize>,
-    angle: f32,
-    object_window_open: &mut bool,
-    object_window_position: Option<([f32; 2], [f32; 2])>,
+    instances: &[Instance],
+    selected_instance: &mut Option<usize>,
+    cursor_position: Option<[f64; 2]>,
+    window_size: PhysicalSize<u32>,
+    scale_factor: f64,
 ) {
     if !show_debug_menu {
         return;
@@ -26,14 +27,19 @@ pub(crate) fn draw_windows(
             ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
             ui.text(format!(
                 "Scene vertices: {}",
-                model.vertices.len() * PYRAMINX_INSTANCES.len()
+                instances
+                    .iter()
+                    .map(|instance| instance.model.vertices.len())
+                    .sum::<usize>()
             ));
         });
 
-    if !*object_window_open {
+    let mut object_window_open = selected_instance.is_some();
+    let Some(instance) = selected_instance.and_then(|index| instances.get(index)) else {
         return;
-    }
+    };
 
+    let model = &instance.model;
     let min = model
         .vertices
         .iter()
@@ -52,16 +58,24 @@ pub(crate) fn draw_windows(
             }
             bounds
         });
-    let Some(instance) = selected_instance.and_then(|index| PYRAMINX_INSTANCES.get(index)) else {
-        *object_window_open = false;
-        return;
-    };
-    let mut is_open = *object_window_open;
-    let title = format!("Object: {} ({})", model.name, instance.direction);
+    let title = format!("Object: {} ({})", model.name, instance.name);
     let mut window = ui
         .window(&title)
-        .opened(&mut is_open)
+        .opened(&mut object_window_open)
         .always_auto_resize(true);
+    let object_window_position = cursor_position.map(|position| {
+        let logical_position = [
+            (position[0] / scale_factor) as f32,
+            (position[1] / scale_factor) as f32,
+        ];
+        object_window_anchor(
+            logical_position,
+            [
+                window_size.width as f32 / scale_factor as f32,
+                window_size.height as f32 / scale_factor as f32,
+            ],
+        )
+    });
     if let Some((position, pivot)) = object_window_position {
         window = window
             .position(position, Condition::Appearing)
@@ -69,28 +83,19 @@ pub(crate) fn draw_windows(
     }
     window.build(|| {
         ui.text(format!(
-            "Layout position: ({:.2}, {:.2})",
-            instance.position[0], instance.position[1]
+            "Position: ({:.2}, {:.2}, {:.2})",
+            instance.position[0], instance.position[1], instance.position[2]
         ));
         ui.text(format!(
             "Rotation: ({:.1}, {:.1}, {:.1}) deg",
-            if instance.axes[0] {
-                angle.to_degrees()
-            } else {
-                0.0
-            },
-            if instance.axes[1] {
-                angle.to_degrees()
-            } else {
-                0.0
-            },
-            if instance.axes[2] {
-                angle.to_degrees()
-            } else {
-                0.0
-            },
+            instance.rotation[0].to_degrees(),
+            instance.rotation[1].to_degrees(),
+            instance.rotation[2].to_degrees(),
         ));
-        ui.text("Scale: (0.42, 0.42, 1.00)");
+        ui.text(format!(
+            "Scale: ({:.2}, {:.2}, {:.2})",
+            instance.scale[0], instance.scale[1], instance.scale[2]
+        ));
         ui.separator();
         ui.text(format!("Vertices: {}", model.vertices.len()));
         ui.text(format!("Triangles: {}", model.vertices.len() / 3));
@@ -103,7 +108,10 @@ pub(crate) fn draw_windows(
             max[0], max[1], max[2]
         ));
     });
-    *object_window_open = is_open;
+
+    if !object_window_open {
+        *selected_instance = None;
+    }
 }
 
 pub(crate) fn object_window_anchor(

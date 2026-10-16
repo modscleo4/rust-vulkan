@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, sync::Arc};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -12,49 +12,45 @@ pub(crate) struct Model {
     pub(crate) vertices: Vec<Vertex>,
 }
 
-pub(crate) struct PyraminxInstance {
-    pub(crate) direction: &'static str,
-    pub(crate) axes: [bool; 3],
-    pub(crate) position: [f32; 2],
+pub(crate) struct Instance {
+    pub(crate) model: Arc<Model>,
+    pub(crate) name: &'static str,
+    pub(crate) position: [f32; 3],
+    pub(crate) rotation: [f32; 3],
+    pub(crate) scale: [f32; 3],
+    pub(crate) animation_axes: [bool; 3],
 }
 
-pub(crate) const PYRAMINX_INSTANCES: [PyraminxInstance; 7] = [
-    PyraminxInstance {
-        direction: "X",
-        axes: [true, false, false],
-        position: [-0.33, 0.58],
-    },
-    PyraminxInstance {
-        direction: "Y",
-        axes: [false, true, false],
-        position: [0.33, 0.58],
-    },
-    PyraminxInstance {
-        direction: "Z",
-        axes: [false, false, true],
-        position: [-0.66, 0.0],
-    },
-    PyraminxInstance {
-        direction: "XY",
-        axes: [true, true, false],
-        position: [0.0, 0.0],
-    },
-    PyraminxInstance {
-        direction: "XZ",
-        axes: [true, false, true],
-        position: [0.66, 0.0],
-    },
-    PyraminxInstance {
-        direction: "YZ",
-        axes: [false, true, true],
-        position: [-0.33, -0.58],
-    },
-    PyraminxInstance {
-        direction: "XYZ",
-        axes: [true, true, true],
-        position: [0.33, -0.58],
-    },
+impl Instance {
+    pub(crate) fn update_rotation(&mut self, animation_angle: f32) {
+        for axis in 0..self.rotation.len() {
+            if self.animation_axes[axis] {
+                self.rotation[axis] = animation_angle;
+            }
+        }
+    }
+}
+
+const PYRAMINX_INSTANCE_LAYOUT: [(&str, [f32; 3], [bool; 3]); 7] = [
+    ("X", [-0.33, 0.58, 0.0], [true, false, false]),
+    ("Y", [0.33, 0.58, 0.0], [false, true, false]),
+    ("Z", [-0.66, 0.0, 0.0], [false, false, true]),
+    ("XY", [0.0, 0.0, 0.0], [true, true, false]),
+    ("XZ", [0.66, 0.0, 0.0], [true, false, true]),
+    ("YZ", [-0.33, -0.58, 0.0], [false, true, true]),
+    ("XYZ", [0.33, -0.58, 0.0], [true, true, true]),
 ];
+
+pub(crate) fn create_pyraminx_instances(model: Arc<Model>) -> [Instance; 7] {
+    PYRAMINX_INSTANCE_LAYOUT.map(|(name, position, animation_axes)| Instance {
+        model: Arc::clone(&model),
+        name,
+        position,
+        rotation: [0.0; 3],
+        scale: [0.42; 3],
+        animation_axes,
+    })
+}
 
 pub(crate) fn load_gltf(source: &[u8]) -> Result<Model, Box<dyn Error>> {
     let (document, buffers, _) = gltf::import_slice(source)?;
@@ -118,6 +114,30 @@ pub(crate) fn load_gltf(source: &[u8]) -> Result<Model, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn pyraminx_instances_share_model_and_store_transforms() {
+        let model = Arc::new(Model {
+            name: "Test".to_owned(),
+            vertices: Vec::new(),
+        });
+        let instances = create_pyraminx_instances(Arc::clone(&model));
+
+        assert!(
+            instances
+                .iter()
+                .all(|instance| Arc::ptr_eq(&instance.model, &model))
+        );
+        assert_eq!(instances[0].position, [-0.33, 0.58, 0.0]);
+        assert_eq!(instances[0].rotation, [0.0; 3]);
+        assert_eq!(instances[0].scale, [0.42; 3]);
+        let mut instance = instances.into_iter().next().unwrap();
+        instance.update_rotation(1.5);
+        assert_eq!(instance.rotation, [1.5, 0.0, 0.0]);
+        instance.update_rotation(2.0);
+        assert_eq!(instance.rotation, [2.0, 0.0, 0.0]);
+    }
 
     #[test]
     fn pyraminx_gltf_loads_four_colored_faces() {
