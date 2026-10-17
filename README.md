@@ -17,7 +17,7 @@ From the workspace root:
 cargo run -p pyraminx-game
 ```
 
-Cargo builds the game and engine crates and launches the application. The default window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required.
+Cargo builds the game and engine crates and launches the application. The default window is 800 × 600 and is not resizable. The model and shader sources are included in the repository, so no separate asset download is required. The renderer prefers Vulkan's synchronized MAILBOX presentation mode when available and falls back to FIFO otherwise.
 
 ## Configure the scene in code
 

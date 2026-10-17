@@ -326,6 +326,10 @@ impl VulkanApp {
         let formats = unsafe {
             surface_loader.get_physical_device_surface_formats(physical_device, surface)?
         };
+        let present_modes = unsafe {
+            surface_loader.get_physical_device_surface_present_modes(physical_device, surface)?
+        };
+        let present_mode = choose_present_mode(&present_modes);
         let surface_format = formats
             .iter()
             .copied()
@@ -380,7 +384,7 @@ impl VulkanApp {
             .queue_family_indices(&queue_family_indices)
             .pre_transform(capabilities.current_transform)
             .composite_alpha(composite_alpha)
-            .present_mode(vk::PresentModeKHR::FIFO)
+            .present_mode(present_mode)
             .clipped(true);
         let loader = ash::khr::swapchain::Device::new(instance, device);
         let swapchain = unsafe { loader.create_swapchain(&create_info, None)? };
@@ -932,6 +936,14 @@ impl VulkanApp {
     }
 }
 
+fn choose_present_mode(available_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
+    if available_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+        vk::PresentModeKHR::MAILBOX
+    } else {
+        vk::PresentModeKHR::FIFO
+    }
+}
+
 impl Drop for VulkanApp {
     fn drop(&mut self) {
         unsafe {
@@ -948,5 +960,27 @@ impl Drop for VulkanApp {
             self.surface_loader.destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_present_mode;
+    use ash::vk;
+
+    #[test]
+    fn prefers_mailbox_presentation_when_available() {
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]),
+            vk::PresentModeKHR::MAILBOX
+        );
+    }
+
+    #[test]
+    fn falls_back_to_fifo_presentation() {
+        assert_eq!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO]),
+            vk::PresentModeKHR::FIFO
+        );
     }
 }

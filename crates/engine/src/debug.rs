@@ -30,8 +30,14 @@ pub(crate) fn draw_windows(
         .title_bar(false)
         .resizable(false)
         .build(|| {
-            ui.text(format!("Frame time: {:.2} ms", frame_duration.as_secs_f32() * 1000.0));
-            ui.text(format!("Frame rate: {:.1} FPS", 1.0 / frame_duration.as_secs_f32()));
+            ui.text(format!(
+                "Frame time: {:.2} ms",
+                frame_duration.as_secs_f32() * 1000.0
+            ));
+            ui.text(format!(
+                "Frame rate: {:.1} FPS",
+                1.0 / frame_duration.as_secs_f32()
+            ));
             ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
             ui.separator();
             ui.text("Scene usage");

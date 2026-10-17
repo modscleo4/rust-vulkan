@@ -80,6 +80,11 @@ impl ApplicationHandler for ExampleApp {
             {
                 self.show_debug_menu = !self.show_debug_menu;
             }
+            WindowEvent::Moved(_) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 let window = self
                     .window
