@@ -734,6 +734,7 @@ impl VulkanApp {
         crate::debug::draw_windows(
             ui,
             show_debug_menu,
+            frame_duration,
             elapsed_seconds,
             &self.instances,
             &mut self.selected_instance,

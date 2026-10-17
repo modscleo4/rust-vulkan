@@ -6,6 +6,7 @@ use crate::model::Instance;
 pub(crate) fn draw_windows(
     ui: &Ui,
     show_debug_menu: bool,
+    frame_duration: std::time::Duration,
     elapsed_seconds: f32,
     instances: &[Instance],
     selected_instance: &mut Option<usize>,
@@ -17,20 +18,29 @@ pub(crate) fn draw_windows(
         return;
     }
 
+    let vertices = instances
+        .iter()
+        .map(|instance| instance.model.vertices.len())
+        .sum::<usize>();
+    let scene_buffer_bytes = vertices * std::mem::size_of::<crate::model::Vertex>();
+
     ui.window("Debug Menu (F3)")
         .always_auto_resize(true)
         .position([10.0, 10.0], Condition::FirstUseEver)
         .title_bar(false)
         .resizable(false)
         .build(|| {
-            ui.text(format!("Frame rate: {:.1} FPS", ui.io().framerate));
+            ui.text(format!("Frame time: {:.2} ms", frame_duration.as_secs_f32() * 1000.0));
+            ui.text(format!("Frame rate: {:.1} FPS", 1.0 / frame_duration.as_secs_f32()));
             ui.text(format!("Uptime: {elapsed_seconds:.1} seconds"));
+            ui.separator();
+            ui.text("Scene usage");
+            ui.text(format!("Instances: {}", instances.len()));
+            ui.text(format!("Vertices: {vertices}"));
+            ui.text(format!("Triangles: {}", vertices / 3));
             ui.text(format!(
-                "Scene vertices: {}",
-                instances
-                    .iter()
-                    .map(|instance| instance.model.vertices.len())
-                    .sum::<usize>()
+                "Vertex buffer: {}",
+                format_bytes(scene_buffer_bytes)
             ));
         });
 
@@ -114,6 +124,23 @@ pub(crate) fn draw_windows(
     }
 }
 
+fn format_bytes(bytes: usize) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{size:.2} {}", UNITS[unit])
+    }
+}
+
 pub(crate) fn object_window_anchor(
     cursor: [f32; 2],
     display_size: [f32; 2],
@@ -140,7 +167,15 @@ pub(crate) fn object_window_anchor(
 
 #[cfg(test)]
 mod tests {
-    use super::object_window_anchor;
+    use super::{format_bytes, object_window_anchor};
+
+    #[test]
+    fn formats_bytes_using_the_largest_suitable_unit() {
+        assert_eq!(format_bytes(384), "384 B");
+        assert_eq!(format_bytes(1536), "1.50 KiB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.00 MiB");
+        assert_eq!(format_bytes(1024_usize.pow(3)), "1.00 GiB");
+    }
 
     #[test]
     fn object_window_anchors_away_from_nearest_edges() {
